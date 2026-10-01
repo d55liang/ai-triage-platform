@@ -6,6 +6,10 @@ def save_ticket(ticket: dict):
     return ticket
 
 
+def fetch_all_tickets():
+    return list(tickets.values())
+
+
 def fetch_ticket(ticket_id: str):
     try:
         ticket = tickets[ticket_id]

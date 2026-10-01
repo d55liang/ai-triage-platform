@@ -1,6 +1,6 @@
 import uuid
 
-from app.repositories.ticket_repository import fetch_ticket, modify_ticket, save_ticket, remove_ticket
+from app.repositories.ticket_repository import fetch_all_tickets, fetch_ticket, modify_ticket, save_ticket, remove_ticket
 
 
 def create_ticket(user_id: str, message: str):
@@ -12,6 +12,10 @@ def create_ticket(user_id: str, message: str):
         "status": "CREATED"
     }
     return save_ticket(ticket)
+
+
+def get_all_tickets():
+    return fetch_all_tickets()
 
 
 def get_ticket(ticket_id: str):
