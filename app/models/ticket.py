@@ -1,13 +1,19 @@
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, Field
 
 
 class CreateTicketRequest(BaseModel):
-    user_id: str
-    message: str
+    user_id: Annotated[str, Field(description="ID of the creator of the ticket")]
+    message: Annotated[str, Field(description="Message from the creator of the ticket")]
 
 
 class Ticket(BaseModel):
-    ticket_id: str
-    user_id: str
-    message: str
-    status: str
+    ticket_id: Annotated[str, Field(description="Main ID of the ticket")]
+    user_id: Annotated[str, Field(description="ID of the creator of the ticket")]
+    message: Annotated[str, Field(description="Message from the creator of the ticket")]
+    status: Annotated[str, Field(description="Status of the ticket")]
+
+class UpdateTicketRequest(BaseModel):
+    message: Annotated[str, Field(description="Message from the creator of the ticket")]
+    status: Annotated[str, Field(description="Status of the ticket")]
