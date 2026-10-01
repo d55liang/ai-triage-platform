@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
-from app.models.ticket import CreateTicketRequest, Ticket, UpdateTicketRequest
+from app.models.request import CreateTicketRequest, UpdateTicketRequest
+from app.models.response import Ticket
 from app.services.ticket_service import create_ticket, delete_ticket, get_ticket, update_ticket
 
 
