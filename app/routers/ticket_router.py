@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from uuid import UUID
 
 from app.models.request import CreateTicketRequest, UpdateTicketRequest
 from app.models.response import TicketItem, TicketsResponse
@@ -25,28 +26,28 @@ def get_all_tickets_api():
 
 
 @ticket_router.get("/{ticket_id}", response_model=TicketItem, status_code=200)
-def get_ticket_api(ticket_id: str):
+def get_ticket_api(ticket_id: UUID):
     try:
-        ticket = get_ticket(ticket_id)
+        ticket = get_ticket(str(ticket_id))
     except KeyError as e:
         raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found.") from e
     return ticket
 
 
 @ticket_router.delete("/{ticket_id}", response_model=TicketItem, status_code=200)
-def delete_ticket_api(ticket_id: str):
+def delete_ticket_api(ticket_id: UUID):
     try:
-        ticket = delete_ticket(ticket_id)
+        ticket = delete_ticket(str(ticket_id))
     except KeyError as e:
         raise HTTPException(status_code=404, detail=f"Delete failed: ticket {ticket_id} not found.") from e
     return ticket
 
 
 @ticket_router.patch("/{ticket_id}", response_model=TicketItem, status_code=200)
-def update_ticket_api(ticket_id: str, request: UpdateTicketRequest):
+def update_ticket_api(ticket_id: UUID, request: UpdateTicketRequest):
     request_dict = request.model_dump(exclude_unset=True)
     try:
-        ticket = update_ticket(ticket_id, request_dict)
+        ticket = update_ticket(str(ticket_id), request_dict)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=f"Update failed: ticket {ticket_id} not found.")
     return ticket
