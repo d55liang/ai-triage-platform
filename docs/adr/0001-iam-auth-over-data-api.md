@@ -8,7 +8,7 @@ We are replacing the RDS Data API with direct `psycopg` connections authenticate
 
 ## Considered options
 
-- **Keep the Data API:** no networking or pooling to manage, but it ties the data layer and migrations to a stale dialect and to the Data API's own value format.
+- **Keep the Data API:** no networking or pooling to manage, but it ties the data layer and migrations to a stale dialect and to the Data API's own value format. It also can't authenticate to this cluster: every call needs a Secrets Manager secret, which express configuration doesn't support.
 - **Password authentication (e.g. from Secrets Manager):** not available. The cluster uses Aurora express configuration, whose internet access gateway accepts IAM authentication only.
 
 ## Consequences

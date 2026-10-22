@@ -2,7 +2,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI agent; each distinct request becomes a **Ticket**, which the agent triages to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** Ticket CRUD API is working on Aurora PostgreSQL. The data layer is being migrated from the RDS Data API to IAM-authenticated connections with SQLAlchemy and Alembic. The agent and workflows are not built yet.
+> **Status:** The Ticket CRUD API is written against the RDS Data API but has never run against Aurora: the Data API needs a Secrets Manager secret, which this cluster doesn't support. The data layer is being moved to IAM-authenticated connections with SQLAlchemy and Alembic, which will also create the `tickets` table. The agent and workflows are not built yet.
 
 ## Tech stack
 

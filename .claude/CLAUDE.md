@@ -57,8 +57,8 @@ After the IAM migration: `AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME
 
 ## Current status
 
-- **Done:** Ticket CRUD (`/api/tickets`) persisted in Aurora through the Data API.
-- **In progress:** migrate the data layer from the Data API to IAM auth tokens with SQLAlchemy, `psycopg` and Alembic ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)).
+- **Done:** Ticket CRUD API (`/api/tickets`): routes, service and repository. It was written against the Data API, which can't authenticate to this cluster (no Secrets Manager secret on an express cluster), so it has never persisted to Aurora and the `tickets` table doesn't exist yet.
+- **In progress:** migrate the data layer from the Data API to IAM auth tokens with SQLAlchemy, `psycopg` and Alembic ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)). Done so far: database `ai_triage` owned by IAM-auth user `triage_app`; local connection with an IAM token verified.
 - **Next:** Ruff and pytest setup; Ticket status enum; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
