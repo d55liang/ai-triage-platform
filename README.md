@@ -29,6 +29,8 @@ DB_NAME=<database name>
 
 AWS credentials come from the default credential chain (e.g. `aws configure`).
 
+`certs/AmazonRootCA1.pem` is the public root certificate the database's TLS certificate chains to. The app verifies the connection against it; no setup needed.
+
 > **Note:** the AWS account is on the Free plan, where the RDS Query Editor isn't usable. Run admin SQL (users, databases, grants) as `postgres` in AWS CloudShell: open the cluster in the RDS console, go to *Connectivity & security*, and launch CloudShell from there.
 
 ## Run

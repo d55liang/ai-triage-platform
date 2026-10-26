@@ -20,6 +20,7 @@ paths:
 
 ## SQLAlchemy 2 (after the IAM migration)
 
+- Driver is psycopg 3 (`psycopg[binary]`, which bundles libpq). The URL scheme is `postgresql+psycopg://`, not `postgresql://`, which would select psycopg2.
 - Use 2.0-style APIs only: `select()`, `Session.execute()`, `Mapped[...]` / `mapped_column()`. No legacy `Query` API.
 - **ORM** for simple, routine CRUD on a single table. **Core** (`select()` with joins, aggregates, or `text()` with bound parameters) for complex or performance-sensitive queries.
 - One engine per process, created in `app/database.py`. One session per request, provided via a FastAPI dependency, closed when the request ends.
