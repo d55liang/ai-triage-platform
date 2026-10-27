@@ -3,7 +3,7 @@ from pathlib import Path
 
 import boto3
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, MetaData
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # Load variables from .env file
@@ -46,7 +46,13 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention={
+        "ix": "ix_%(column_0_label)s",
+        "uq": "uq_%(table_name)s_%(column_0_name)s",
+        "ck": "ck_%(table_name)s_%(constraint_name)s",
+        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+        "pk": "pk_%(table_name)s",
+    })
 
 
 def execute_sql(sql: str, parameters: list=None) -> dict:

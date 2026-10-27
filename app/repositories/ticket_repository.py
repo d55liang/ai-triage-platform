@@ -69,7 +69,6 @@ def remove_ticket(ticket_id: str):
     if not records:
         raise KeyError(ticket_id)
     ticket = _row_to_ticket(records[0])
-    ticket["status"] = "DELETED"
     return ticket
 
 

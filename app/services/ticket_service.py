@@ -1,5 +1,6 @@
 import uuid
 
+from app.models.enums import TicketStatus
 from app.repositories.ticket_repository import fetch_all_tickets, fetch_ticket, modify_ticket, save_ticket, remove_ticket
 
 
@@ -9,7 +10,7 @@ def create_ticket(user_id: str, message: str):
         "ticket_id": ticket_id,
         "user_id": user_id,
         "message": message,
-        "status": "CREATED"
+        "status": TicketStatus.CREATED
     }
     return save_ticket(ticket)
 

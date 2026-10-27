@@ -1,6 +1,7 @@
 ---
 paths:
   - "app/database.py"
+  - "app/models/orm.py"
   - "app/repositories/**/*.py"
   - "alembic/**"
   - "**/*.sql"
@@ -22,6 +23,7 @@ paths:
 
 - Driver is psycopg 3 (`psycopg[binary]`, which bundles libpq). The URL scheme is `postgresql+psycopg://`, not `postgresql://`, which would select psycopg2.
 - Use 2.0-style APIs only: `select()`, `Session.execute()`, `Mapped[...]` / `mapped_column()`. No legacy `Query` API.
+- ORM table classes live in `app/models/orm.py` and inherit `Base` from `app/database.py`. Nullability comes from the annotation (`Mapped[str]` is `NOT NULL`, `Mapped[str | None]` is nullable). Timestamps need `DateTime(timezone=True)`; plain `Mapped[datetime]` creates `TIMESTAMP WITHOUT TIME ZONE`.
 - **ORM** for simple, routine CRUD on a single table. **Core** (`select()` with joins, aggregates, or `text()` with bound parameters) for complex or performance-sensitive queries.
 - One engine per process, created in `app/database.py`. One session per request, provided via a FastAPI dependency, closed when the request ends.
 - Repositories own transactions: commit on success, roll back on error. Services don't touch sessions directly.

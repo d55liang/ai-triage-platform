@@ -4,7 +4,7 @@ Interview-prep notes: what was decided, why, what else was considered, and what 
 
 ## Overview
 
-AI Triage Platform turns natural-language requests into structured work. A User talks to an AI agent; each distinct request becomes a Ticket; the agent triages the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run. Today only the Ticket API exists: a FastAPI backend persisting to Aurora PostgreSQL.
+AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11 and §12). Today only the Ticket API exists: a FastAPI backend persisting to Aurora PostgreSQL.
 
 ```text
 Client ──HTTP──▶ FastAPI
@@ -75,6 +75,14 @@ See [ADR 0001](docs/adr/0001-iam-auth-over-data-api.md). Status: **in progress**
 - **Tradeoffs:** two styles to know. The rule is: CRUD on one table → ORM; joins, aggregates or anything performance-sensitive → Core.
 - **Soundbite:** "I use the ORM where it saves boilerplate and Core where I want to see the SQL. Same engine and same transactions, so they mix cleanly."
 
+### Table models separate from API models (no SQLModel)
+
+- **Decision:** SQLAlchemy ORM classes (`app/models/orm.py`) describe tables; Pydantic models (`app/models/request.py`, `response.py`) describe the API contract. Response models read ORM objects with `from_attributes=True`.
+- **Why:** the storage schema and the API contract change for different reasons. A column can be added without exposing it, and a JSON field can be renamed without a migration.
+- **Alternatives:** SQLModel, one class that is both table and Pydantic model. It removes the duplicated field names, but table models skip validation (so request models are still needed), it couples the API to the schema, it is pre-1.0 and maintained largely by one person, and database-specific types (`TIMESTAMPTZ`, server defaults) still go through SQLAlchemy options.
+- **Tradeoffs:** field names are written twice, and the types must be kept in step by hand (e.g. `UUID` and `datetime` in both).
+- **Soundbite:** "My table models and API models are separate: the database schema and the API contract evolve for different reasons. SQLModel would save a few lines but tie them together."
+
 ## 6. Connection pooling vs. Serverless v2 auto-pause
 
 Status: **planned**. Numbers will be tuned during implementation.
@@ -114,13 +122,61 @@ Status: **planned**.
 - **Tradeoffs:** small differences between local Postgres and Aurora can slip through. Mitigated by matching the major version (17) and keeping the Aurora tests for the integration edges.
 - **Soundbite:** "Most tests run on a local Postgres for speed and cost. A small set runs against Aurora to cover IAM auth and the cloud-specific behaviour."
 
+## 11. Ticket lifecycle: a status per handoff, ending at Triage
+
+Status: **enum done**; the queue and workers that drive the transitions are planned.
+
+```text
+CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ──match──▶ TRIAGED
+   ▲                   ▲                          ├──no match──▶ UNMATCHED
+   └ re-publish        └──── timeout / retry ─────┤
+     (stuck in                                    └──retries used up──▶ FAILED
+      CREATED)
+CANCELLED: reachable by User action from any status except FAILED and CANCELLED
+```
+
+- **Decision:** seven Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
+- **Why:**
+  - Each status is a place a Ticket can get stuck, so each one can be monitored and recovered.
+  - **CREATED vs QUEUED** covers the dual-write problem: saving to Postgres and publishing to the queue are two systems, and the publish can fail after the save commits. A Ticket left in CREATED is found and re-published. The standard fix later is a transactional outbox (Ticket and outbox row in one transaction; a separate process publishes).
+  - **TRIAGING** lets a worker claim a Ticket idempotently: `UPDATE ... SET status = 'TRIAGING' WHERE ticket_id = :id AND status = 'QUEUED'`. Queues deliver at least once, so only the worker whose update matches a row proceeds. A crashed worker leaves TRIAGING, which a timeout returns to QUEUED.
+  - **UNMATCHED** and **FAILED** give the unhappy paths a home instead of leaving Tickets in TRIAGING.
+  - Ending at TRIAGED gives each fact one owner. If the Ticket mirrored the Run's outcome, the two could drift.
+- **Alternatives:**
+  - The Ticket mirrors the Run (`COMPLETED`, `CLOSED`): one field to read, but two sources of truth kept in sync by hand.
+  - A native Postgres `ENUM`: also enforced, but removing or renaming a value means re-creating the type.
+  - Fewer statuses (`CREATED`, `TRIAGED`): simpler, but stuck and failed Tickets are invisible.
+- **Tradeoffs:** "is the User's request done?" needs a join to the Workflow Run, or a value computed at read time. Changing the allowed values needs a hand-written migration, because Alembic autogenerate doesn't detect `CHECK` changes.
+- **Soundbite:** "Each Ticket Status is a handoff in the pipeline, so I can see exactly where a Ticket is stuck. CREATED vs QUEUED covers the dual-write problem, and TRIAGING is claimed with a conditional update so duplicate deliveries are harmless. Once triaged, progress belongs to the Workflow Run."
+
+## 12. Intake Agent: tools for platform operations, Triage for domain requests
+
+Status: **planned**.
+
+```text
+User message ─▶ Intake Agent (one LLM call per turn, with tools)
+                 ├─ new domain request ─▶ create_ticket ─▶ queue ─▶ Triage workers ─▶ Workflow Run
+                 ├─ about a Ticket     ─▶ list_tickets / cancel_ticket (synchronous API calls)
+                 └─ unclear            ─▶ ask the User
+```
+
+- **Decision:** the Intake Agent is an LLM with tool calling. Platform operations (create, list, cancel a Ticket) are tools backed by API endpoints. Domain requests ("order a laptop") become Tickets and go through Triage on asynchronous workers. Rule of thumb: if it changes the platform's own state, it's a tool; if it's work the User wants done, it's a Ticket.
+- **Why:**
+  - Platform operations are few, fixed in code, and must be instant and exact. Domain requests are many, defined as data by admins, and ambiguous, which is what Match Confidence and Confidence Thresholds are for.
+  - Choosing a tool costs nothing extra: it happens in the same LLM call that writes the reply. The expensive matching only runs for extracted Tickets, off the request path.
+  - Cancelling is a synchronous call, not a queue message. Workers never receive "cancel"; they respect the status, because every transition is a compare-and-set (`UPDATE ... WHERE status = <expected>`). A worker that claims or finishes a cancelled Ticket matches no row and stops.
+  - Single-purpose endpoints (`/cancel` rather than a generic status `PATCH`) are easier for an LLM to call correctly.
+- **Alternatives:** model platform operations as Workflow Definitions and triage everything. One mechanism, but a cancel becomes a Ticket about a Ticket, waits on the queue while the target keeps moving, can come back UNMATCHED, and still needs platform code to change statuses.
+- **Tradeoffs:** two paths to build and explain. Tool calls are only as good as the model's choice, so the service must still check ownership and allowed transitions: the LLM decides what to call, the service decides what's allowed, and tool calls are never trusted for authorisation.
+- **Scaling Triage later:** with many Workflow Definitions, match in two stages. Embedding similarity shortlists a few candidates cheaply; the LLM computes Match Confidence only for the shortlist.
+- **Soundbite:** "Platform operations are tools: fast, deterministic, few. Domain requests become Tickets and go through Triage, because matching against an open-ended, admin-defined set of workflows is what actually needs confidence scoring. The database status is the source of truth, and every transition is a compare-and-set, so a cancel can't race with a worker."
+
 ---
 
 ## Known gaps
 
-- `DELETE /tickets/{id}` hard-deletes the row but returns `status: "DELETED"`, which is not a real Ticket Status.
-- `status` is a free string. An enum (`CREATED`, `TRIAGED`) is planned.
-- `UpdateTicketRequest` fields are typed `str` but default to `None` (should be `str | None`).
+- Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
+- `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `update_ticket_api` re-raises without `from e`, unlike the other handlers.
 - The service layer catches `KeyError` only to re-raise it unchanged.
 - Dependencies in `requirements.txt` are unpinned.

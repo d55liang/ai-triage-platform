@@ -1,6 +1,6 @@
 # AI Triage Platform
 
-A backend that turns natural-language requests into structured work. A user talks to an AI agent; each distinct request becomes a **Ticket**, which the agent triages to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
+A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
 > **Status:** The Ticket CRUD API is written against the RDS Data API but has never run against Aurora: the Data API needs a Secrets Manager secret, which this cluster doesn't support. The data layer is being moved to IAM-authenticated connections with SQLAlchemy and Alembic, which will also create the `tickets` table. The agent and workflows are not built yet.
 
@@ -49,7 +49,7 @@ uvicorn app.main:app --reload
 | `POST` | `/api/tickets` | Create a Ticket (`user_id`, `message`) |
 | `GET` | `/api/tickets` | List all Tickets |
 | `GET` | `/api/tickets/{ticket_id}` | Get one Ticket |
-| `PATCH` | `/api/tickets/{ticket_id}` | Partially update `message` and/or `status` |
+| `PATCH` | `/api/tickets/{ticket_id}` | Update `message` (status is system-managed) |
 | `DELETE` | `/api/tickets/{ticket_id}` | Delete a Ticket |
 
 ## Project docs
