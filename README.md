@@ -35,7 +35,10 @@ AWS credentials come from the default credential chain (e.g. `aws configure`).
 
 ## Run
 
+Create or update the database schema, then start the API:
+
 ```bash
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 

@@ -21,7 +21,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Validation | Pydantic v2 | |
 | Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL for simple tests |
 | DB access | Raw SQL via the RDS Data API (`boto3` `rds-data`) | SQLAlchemy 2 (ORM + Core) over `psycopg` with IAM auth tokens |
-| Migrations | None (schema created by hand) | Alembic |
+| Migrations | Alembic (`alembic/`, runs through the app's engine) | |
 | Lint / format | None | Ruff |
 | Tests | None | pytest |
 
@@ -50,7 +50,15 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload      # http://localhost:8000/docs, /health, /api/tickets
 ```
 
-Not set up yet (do not claim these work): `ruff check .`, `ruff format .`, `pytest`, `alembic upgrade head`.
+```bash
+alembic upgrade head                                  # apply migrations (connects to Aurora as triage_app)
+alembic revision --autogenerate -m "<what changed>"   # draft a migration from app/models/orm.py; review before applying
+alembic upgrade head --sql                            # print the SQL without connecting
+```
+
+Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
+
+Not set up yet (do not claim these work): `ruff check .`, `ruff format .`, `pytest`.
 
 ### Environment (`.env`, never committed)
 
@@ -60,7 +68,7 @@ After the IAM migration: `AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`): routes, service and repository. It was written against the Data API, which can't authenticate to this cluster (no Secrets Manager secret on an express cluster), so it has never persisted to Aurora and the `tickets` table doesn't exist yet.
-- **In progress:** migrate the data layer from the Data API to IAM auth tokens with SQLAlchemy, `psycopg` and Alembic ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)). Done so far: database `ai_triage` owned by IAM-auth user `triage_app`; local connection with an IAM token verified.
+- **In progress:** migrate the data layer from the Data API to IAM auth tokens with SQLAlchemy, `psycopg` and Alembic ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)). Done so far: database `ai_triage` owned by IAM-auth user `triage_app`; SQLAlchemy engine with IAM tokens and pinned TLS; `Ticket` ORM model and Ticket Status enum; Alembic set up, `tickets` table created by the first migration. Left: move the repository to SQLAlchemy, fix `TicketItem` types, remove the Data API code and env vars.
 - **Next:** Ruff and pytest setup; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
