@@ -25,8 +25,12 @@ paths:
 - Use 2.0-style APIs only: `select()`, `Session.execute()`, `Mapped[...]` / `mapped_column()`. No legacy `Query` API.
 - ORM table classes live in `app/models/orm.py` and inherit `Base` from `app/database.py`. Nullability comes from the annotation (`Mapped[str]` is `NOT NULL`, `Mapped[str | None]` is nullable). Timestamps need `DateTime(timezone=True)`; plain `Mapped[datetime]` creates `TIMESTAMP WITHOUT TIME ZONE`.
 - **ORM** for simple, routine CRUD on a single table. **Core** (`select()` with joins, aggregates, or `text()` with bound parameters) for complex or performance-sensitive queries.
-- One engine per process, created in `app/database.py`. One session per request, provided via a FastAPI dependency, closed when the request ends.
-- Repositories own transactions: commit on success, roll back on error. Services don't touch sessions directly.
+- One engine per process, created in `app/database.py`.
+- **The caller owns the transaction.** HTTP requests get one session per request from `SessionDep` (`app/dependencies.py`), which wraps `get_session()` (`SessionLocal.begin()`: commit if the handler returns, roll back if it raises). Workers and scripts open their own with `with SessionLocal.begin() as session:`.
+- `SessionDep` uses `Depends(get_session, scope="function")` so the commit runs before the response is sent. With the default `"request"` scope it runs after, and a failed commit would follow a success response.
+- Repository functions take `session: Session` as their first parameter. They query, `add`, `delete` and `flush()`, but never open, commit, roll back or close a session. Call `flush()` when the response needs database-generated values (e.g. `created_at`) before the request commits.
+- Services pass the session through to repositories and never use it directly.
+- Don't make slow external calls (LLM, queue) while a session holds a connection; the pool is small.
 - Repositories still raise `KeyError` for a missing row, so routers stay unchanged.
 
 ## Alembic

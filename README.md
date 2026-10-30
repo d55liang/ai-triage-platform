@@ -2,13 +2,14 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket CRUD API is written against the RDS Data API but has never run against Aurora: the Data API needs a Secrets Manager secret, which this cluster doesn't support. The data layer is being moved to IAM-authenticated connections with SQLAlchemy and Alembic, which will also create the `tickets` table. The agent and workflows are not built yet.
+> **Status:** The Ticket CRUD API persists to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. The agent and workflows are not built yet.
 
 ## Tech stack
 
 - **Python 3.13**, **FastAPI**, **Pydantic v2**
 - **Aurora PostgreSQL 17 Serverless v2** (AWS `us-east-2`)
-- Currently: RDS Data API via `boto3`. Planned: SQLAlchemy + `psycopg` with IAM auth, Alembic, Ruff, pytest
+- **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
+- Planned: Ruff, pytest
 
 ## Setup
 

@@ -16,12 +16,12 @@ Client ──HTTP──▶ FastAPI
           services/  IDs, defaults, business rules
                   │
                   ▼
-      repositories/  SQL, row → dict mapping
+      repositories/  ORM queries on the caller's session, no commits
                   │
                   ▼
            database.py ──▶ Aurora PostgreSQL Serverless v2 (us-east-2, express config, no VPC)
-             today:   RDS Data API (HTTPS, boto3)
-             planned: psycopg + IAM auth token, via SQLAlchemy
+                           SQLAlchemy over psycopg, IAM auth token per connection,
+                           TLS pinned to Amazon Root CA 1; one session per request
 ```
 
 ---
@@ -31,7 +31,7 @@ Client ──HTTP──▶ FastAPI
 - **Decision:** three layers. Each one calls only the layer below it.
 - **Why:** HTTP concerns, business rules and persistence change for different reasons. Swapping the database client (as the IAM migration does) touches only the repository and `database.py`.
 - **Alternatives:** logic inside route handlers (fine for a toy app, but it mixes HTTP and SQL); a full hexagonal / ports-and-adapters design (too much ceremony at this size).
-- **Tradeoffs:** some pass-through service functions today (`get_ticket` only calls `fetch_ticket`). Accepted, because the service layer is where Triage logic will go.
+- **Tradeoffs:** some pass-through service functions today (`get_ticket` only calls `fetch_ticket`). Accepted, because the service layer is where Triage logic will go. The database session is the one thing that crosses all three layers: the router receives it from FastAPI and passes it down (see §5, *Session per request*).
 - **Soundbite:** "I split routing, business logic and persistence so I could replace the data layer without touching the API. That paid off when I migrated off the Data API."
 
 ## 2. Aurora PostgreSQL Serverless v2
@@ -75,6 +75,22 @@ See [ADR 0001](docs/adr/0001-iam-auth-over-data-api.md). Status: **in progress**
 - **Tradeoffs:** two styles to know. The rule is: CRUD on one table → ORM; joins, aggregates or anything performance-sensitive → Core.
 - **Soundbite:** "I use the ORM where it saves boilerplate and Core where I want to see the SQL. Same engine and same transactions, so they mix cleanly."
 
+### Session per request: the caller owns the transaction
+
+- **Decision:** a FastAPI dependency (`get_session`, exposed as `SessionDep`) opens one session per request with `SessionLocal.begin()`, commits when the handler returns and rolls back if it raises. The session is passed router → service → repository. Repositories use it and `flush()` but never commit. Workers will open their own session the same way and call the same repositories.
+- **Why:**
+  - Several repository calls can be one transaction, e.g. Triage creating a Workflow Run and setting the Ticket to TRIAGED: both or neither.
+  - Tests can override the dependency with a session inside a transaction that is rolled back after each test, so every test starts clean with no teardown.
+  - Repositories that take a session work for both HTTP requests and queue workers.
+  - One connection per request instead of one per repository call.
+- **Alternatives:** each repository function opens and commits its own session. Fewer signature changes, but every call is its own transaction, tests can't reach the session, and workers couldn't group calls.
+- **Tradeoffs:**
+  - Every service and repository signature carries a `session` parameter.
+  - The commit happens after the handler returns, so a repository must `flush()` when the response needs database-generated values such as `created_at`.
+  - The dependency uses `scope="function"` so the commit runs *before* the response is sent. With FastAPI's default `"request"` scope it would run after, and a failed commit would follow a 201.
+  - A request holds its connection until it commits, so no slow external calls (LLM, queue) while a session is active.
+- **Soundbite:** "One session per request through a FastAPI dependency, committed before the response goes out. Repositories never commit, so I can compose several calls into one transaction, and in tests I swap in a session that rolls back."
+
 ### Table models separate from API models (no SQLModel)
 
 - **Decision:** SQLAlchemy ORM classes (`app/models/orm.py`) describe tables; Pydantic models (`app/models/request.py`, `response.py`) describe the API contract. Response models read ORM objects with `from_attributes=True`.
@@ -108,10 +124,11 @@ Status: **planned**. Numbers will be tuned during implementation.
 
 ## 9. PATCH partial updates with a column allowlist
 
-- **Decision:** `PATCH /tickets/{id}` uses `model_dump(exclude_unset=True)`, and the repository only builds `SET` clauses for columns in `ALLOWED_COLUMNS`.
-- **Why:** clients send only the fields they want to change. The allowlist makes the dynamic SQL safe, because column names can't be parameterised.
-- **Alternatives:** PUT with a full replacement (simpler SQL, but clients must send everything).
-- **Soundbite:** "Partial updates via PATCH. Column names come from an allowlist and values are parameterised, so the dynamic SQL can't be injected."
+- **Decision:** `PATCH /tickets/{id}` uses `model_dump(exclude_unset=True)`, and the repository only sets attributes listed in `ALLOWED_COLUMNS` (currently `message`); the ORM emits an `UPDATE` for the changed attributes only.
+- **Why:** clients send only the fields they want to change. With raw SQL the allowlist prevented injection through column names. With the ORM, injection isn't possible, and the allowlist instead guarantees that `ticket_id`, `status` and `created_at` can never be changed through `PATCH`, even if the request model grew by mistake. Status is system-managed (§11).
+- **Alternatives:** PUT with a full replacement (simpler, but clients must send everything).
+- **Tradeoffs:** unknown fields such as `status` are ignored with a 200 rather than rejected; `extra="forbid"` on the request model would turn them into a 422.
+- **Soundbite:** "Partial updates via PATCH. The request model and a repository allowlist both limit what can change, so status stays system-managed."
 
 ## 10. Testing: local PostgreSQL first, Aurora for what matters
 
@@ -177,7 +194,7 @@ User message ─▶ Intake Agent (one LLM call per turn, with tools)
 
 - Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
-- `update_ticket_api` re-raises without `from e`, unlike the other handlers.
 - The service layer catches `KeyError` only to re-raise it unchanged.
-- Dependencies in `requirements.txt` are unpinned.
+- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.
+- `database.py` still holds the unused Data API client (`execute_sql`) and reads `DB_CLUSTER_ARN` / `DB_SECRET_ARN`.
 - Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.

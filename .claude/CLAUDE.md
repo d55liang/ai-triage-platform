@@ -20,7 +20,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | API | FastAPI, Uvicorn | |
 | Validation | Pydantic v2 | |
 | Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL for simple tests |
-| DB access | Raw SQL via the RDS Data API (`boto3` `rds-data`) | SQLAlchemy 2 (ORM + Core) over `psycopg` with IAM auth tokens |
+| DB access | SQLAlchemy 2 (ORM + Core) over `psycopg`, IAM auth token per connection | |
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
 | Lint / format | None | Ruff |
 | Tests | None | pytest |
@@ -32,7 +32,8 @@ Technology-specific rules live in [rules/](rules/).
 ```text
 app/
   main.py                 FastAPI app, /health, router registration
-  database.py             Database client (currently Data API execute_sql)
+  database.py             Engine (IAM token per connection), SessionLocal, Base, get_session; legacy Data API execute_sql until removed
+  dependencies.py         FastAPI dependencies (SessionDep)
   models/request.py       Pydantic request bodies
   models/response.py      Pydantic response bodies
   models/orm.py           SQLAlchemy table models
@@ -67,8 +68,8 @@ After the IAM migration: `AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`): routes, service and repository. It was written against the Data API, which can't authenticate to this cluster (no Secrets Manager secret on an express cluster), so it has never persisted to Aurora and the `tickets` table doesn't exist yet.
-- **In progress:** migrate the data layer from the Data API to IAM auth tokens with SQLAlchemy, `psycopg` and Alembic ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)). Done so far: database `ai_triage` owned by IAM-auth user `triage_app`; SQLAlchemy engine with IAM tokens and pinned TLS; `Ticket` ORM model and Ticket Status enum; Alembic set up, `tickets` table created by the first migration. Left: move the repository to SQLAlchemy, fix `TicketItem` types, remove the Data API code and env vars.
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)).
+- **In progress:** remove the Data API code (`execute_sql`, the `rds-data` client) and its env vars (`DB_CLUSTER_ARN`, `DB_SECRET_ARN`).
 - **Next:** Ruff and pytest setup; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
@@ -78,6 +79,7 @@ Update this section when a milestone starts or lands.
 Follow the existing code. In particular:
 
 - **Layers:** router → service → repository. Each layer calls only the one below it. Routers never touch the database; repositories never raise HTTP errors.
+- **Sessions:** the caller owns the transaction. Routers take `session: SessionDep` and pass it as the first argument to the service, which passes it to the repository. Repositories never commit (see `rules/postgres.md`).
 - **Naming:** files `<resource>_router.py`, `<resource>_service.py`, `<resource>_repository.py`. Router handlers end in `_api`. Service verbs are `create/get/update/delete`; repository verbs are `save/fetch/modify/remove`.
 - **Models:** request bodies in `models/request.py` (`<Action><Resource>Request`), responses in `models/response.py` (`<Resource>Item`, list wrapper `<Resource>sResponse` with a `data` field). Every field is `Annotated[..., Field(description=...)]`. Table models live in `models/orm.py`, one class per table named after the resource (`Ticket`). Keep table and API models separate; don't use SQLModel (see `DESIGN.md` §5).
 - **Errors:** repositories raise `KeyError` when a row is missing; routers translate it to `HTTPException(404)` with `raise ... from e`.

@@ -1,10 +1,11 @@
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import boto3
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, event, MetaData
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 # Load variables from .env file
 load_dotenv()
@@ -43,6 +44,12 @@ def _set_iam_token(dialect, conn_rec, cargs, cparams) -> None:
 
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+
+def get_session() -> Iterator[Session]:
+    """One transaction per caller: commits if the caller finishes, rolls back if it raises."""
+    with SessionLocal.begin() as session:
+        yield session
 
 
 class Base(DeclarativeBase):
