@@ -32,7 +32,7 @@ Technology-specific rules live in [rules/](rules/).
 ```text
 app/
   main.py                 FastAPI app, /health, router registration
-  database.py             Engine (IAM token per connection), SessionLocal, Base, get_session; legacy Data API execute_sql until removed
+  database.py             Engine (IAM token per connection, pinned TLS), SessionLocal, Base, get_session
   dependencies.py         FastAPI dependencies (SessionDep)
   models/request.py       Pydantic request bodies
   models/response.py      Pydantic response bodies
@@ -63,13 +63,12 @@ Not set up yet (do not claim these work): `ruff check .`, `ruff format .`, `pyte
 
 ### Environment (`.env`, never committed)
 
-Current: `AWS_REGION`, `DB_CLUSTER_ARN`, `DB_SECRET_ARN`, `DB_NAME`.
-After the IAM migration: `AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_NAME`.
+`AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER` (`triage_app`), `DB_NAME` (`ai_triage`). All required (`os.environ[...]`); no password, since each connection gets an IAM auth token.
 
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)).
-- **In progress:** remove the Data API code (`execute_sql`, the `rds-data` client) and its env vars (`DB_CLUSTER_ARN`, `DB_SECRET_ARN`).
+- **In progress:** nothing; the IAM migration branch (`refactor/iam-auth-sqlalchemy`) is ready for review.
 - **Next:** Ruff and pytest setup; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.

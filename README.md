@@ -23,12 +23,15 @@ Create a `.env` file (never committed):
 
 ```bash
 AWS_REGION=us-east-2
-DB_CLUSTER_ARN=<aurora cluster ARN>
-DB_SECRET_ARN=<secrets manager ARN>
-DB_NAME=<database name>
+DB_HOST=<aurora cluster writer endpoint>
+DB_PORT=5432
+DB_USER=triage_app
+DB_NAME=ai_triage
 ```
 
-AWS credentials come from the default credential chain (e.g. `aws configure`).
+Write `KEY=value` with no spaces around `=`, so the file also loads in a shell (`set -a && source .env && set +a`). All five variables are required; the app stops at startup if one is missing. There is no password: each connection uses a short-lived IAM auth token.
+
+AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user.
 
 `certs/AmazonRootCA1.pem` is the public root certificate the database's TLS certificate chains to. The app verifies the connection against it; no setup needed.
 

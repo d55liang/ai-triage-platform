@@ -44,7 +44,7 @@ Client ──HTTP──▶ FastAPI
 
 ## 3. IAM auth tokens instead of the Data API
 
-See [ADR 0001](docs/adr/0001-iam-auth-over-data-api.md). Status: **in progress**.
+See [ADR 0001](docs/adr/0001-iam-auth-over-data-api.md). Status: **done**.
 
 - **Decision:** connect directly with `psycopg`, using a short-lived IAM auth token as the password, through SQLAlchemy, with Alembic for migrations.
 - **Why:** SQLAlchemy and Alembic need a standard driver. The Data API dialect (`sqlalchemy-aurora-data-api`) is third-party and was last released in Dec 2023. A standard driver also lets the same code run against a local PostgreSQL. IAM tokens expire after 15 minutes, so there is no long-lived database password.
@@ -101,12 +101,17 @@ See [ADR 0001](docs/adr/0001-iam-auth-over-data-api.md). Status: **in progress**
 
 ## 6. Connection pooling vs. Serverless v2 auto-pause
 
-Status: **planned**. Numbers will be tuned during implementation.
+Status: **done**.
 
-- **Decision:** a small pool, with `pool_recycle` shorter than the 15-minute token lifetime and `pool_pre_ping` enabled.
-- **Why:** pooling avoids a TLS handshake and token generation on every request. Recycling keeps reconnects regular and predictable.
-- **Tradeoffs:** idle pooled connections stop Serverless v2 from auto-pausing, which costs money. Keep the pool small, and stop the app when you're not using it.
-- **Soundbite:** "Pooling and scale-to-zero pull in opposite directions: open connections keep the cluster awake. I kept the pool small and short-lived."
+- **Decision:** a small pool (`pool_size=2`, `max_overflow=0`) with `pool_pre_ping=True`. On the server, the app user has `idle_session_timeout = '60s'`, so Postgres closes connections that sit idle for a minute. No `pool_recycle`.
+- **Why:**
+  - Pooling avoids a TLS handshake over the internet on every request.
+  - Idle pooled connections stop Serverless v2 from auto-pausing. The server-side timeout closes them, so the cluster can pause while the app is still running.
+  - `pool_pre_ping` detects connections closed by the timeout or by a pause and replaces them transparently.
+  - `pool_recycle` isn't needed for token expiry: an IAM token only has to be valid when a connection opens, and existing connections stay valid after it expires.
+- **Alternatives:** `NullPool` (a new connection per request: auto-pause works trivially, but every request pays for TLS and token generation); `pool_recycle` (client-side, only checked on checkout, so idle connections still hold the cluster awake).
+- **Tradeoffs:** the first request after an idle minute pays one reconnect; the first after an auto-pause pays a cold start of several seconds.
+- **Soundbite:** "Pooling and scale-to-zero pull in opposite directions. I keep a tiny pool and let Postgres close idle sessions after a minute, with pre-ping to reconnect, so the cluster can still pause while the app runs."
 
 ## 7. UUID primary keys generated in the service
 
@@ -195,6 +200,4 @@ User message ─▶ Intake Agent (one LLM call per turn, with tools)
 - Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - The service layer catches `KeyError` only to re-raise it unchanged.
-- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.
-- `database.py` still holds the unused Data API client (`execute_sql`) and reads `DB_CLUSTER_ARN` / `DB_SECRET_ARN`.
-- Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
+- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.- Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
