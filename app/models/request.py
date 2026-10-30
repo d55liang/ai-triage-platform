@@ -10,4 +10,3 @@ class CreateTicketRequest(BaseModel):
 
 class UpdateTicketRequest(BaseModel):
     message: Annotated[str, Field(description="Message from the creator of the ticket")] = None
-    status: Annotated[str, Field(description="Status of the ticket")] = None

@@ -1,31 +1,44 @@
 # AI Triage Platform
 
-A platform where users describe what they need in natural language to an AI agent, which turns each need into a Ticket and maps it to one predefined Workflow Definition.
+A platform where users describe what they need in natural language to an AI agent, which turns each need into a Ticket; Triage then maps each Ticket to one predefined Workflow Definition.
 
 ## Language
 
 ### Intake
 
 **Conversation**:
-The natural-language exchange between a User and the AI agent from which Tickets are drawn. One Conversation can produce several Tickets.
+The natural-language exchange between a User and the Intake Agent from which Tickets are drawn. One Conversation can produce several Tickets.
 _Avoid_: Chat, session, thread
+
+**Intake Agent**:
+The AI agent the User talks to in a Conversation. It turns each distinct request into a Ticket, and acts on existing Tickets (for example cancelling one) at the User's request. It does not triage.
+_Avoid_: Bot, assistant, "the agent" (ambiguous once Triage runs separately)
 
 **Ticket**:
 A single request extracted from a Conversation, which is triaged to at most one Workflow Definition.
 _Avoid_: Issue, case, request, message
 
 **Ticket Status**:
-Where a Ticket is in its lifecycle: **CREATED** (not yet triaged) or **TRIAGED** (has a Workflow Run). A deleted Ticket no longer exists; deletion is not a status.
-_Avoid_: State
+Where a Ticket is in its Triage lifecycle. Only the system changes it, except that a User may cancel.
+- **CREATED**: saved, not yet handed off for Triage.
+- **QUEUED**: waiting for Triage.
+- **TRIAGING**: Triage is in progress.
+- **TRIAGED**: a Workflow Definition was selected and its Workflow Run created. The Ticket's lifecycle ends here; the work's progress is the Workflow Run's own status.
+- **UNMATCHED**: Triage finished, but no Workflow Definition met its Confidence Threshold.
+- **FAILED**: Triage could not finish, even after retries.
+- **CANCELLED**: the User withdrew the Ticket. Cancelling a TRIAGED Ticket also cancels its active Workflow Run.
+
+A deleted Ticket no longer exists; deletion is not a status.
+_Avoid_: State, PENDING, COMPLETED, CLOSED
 
 ### Triage
 
 **Triage**:
-The agent's act of matching a Ticket to a Workflow Definition and creating its Workflow Run, which happens only when the Match Confidence meets that definition's Confidence Threshold. If no definition qualifies, the Ticket stays CREATED and the agent asks clarifying questions; if several qualify, the highest Match Confidence wins.
+Matching a Ticket to a Workflow Definition and creating its Workflow Run, which happens only when the Match Confidence meets that definition's Confidence Threshold. If no definition qualifies, the Ticket becomes UNMATCHED and the Intake Agent asks the User clarifying questions; if several qualify, the highest Match Confidence wins.
 _Avoid_: Routing, classification, assignment
 
 **Match Confidence**:
-How sure the agent is that a Ticket belongs to a particular Workflow Definition.
+How sure Triage is that a Ticket belongs to a particular Workflow Definition.
 _Avoid_: Score, probability, certainty
 
 **Confidence Threshold**:
