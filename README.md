@@ -9,7 +9,8 @@ A backend that turns natural-language requests into structured work. A user talk
 - **Python 3.13**, **FastAPI**, **Pydantic v2**
 - **Aurora PostgreSQL 17 Serverless v2** (AWS `us-east-2`)
 - **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
-- Planned: Ruff, pytest
+- **Ruff** for lint and format
+- Planned: pytest against a local PostgreSQL 17 in Docker (see [DESIGN.md](DESIGN.md) §10)
 
 ## Setup
 
@@ -48,6 +49,15 @@ uvicorn app.main:app --reload
 
 - Interactive docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
+
+## Lint and format
+
+With the venv active:
+
+```bash
+ruff check .
+ruff format .
+```
 
 ## API
 

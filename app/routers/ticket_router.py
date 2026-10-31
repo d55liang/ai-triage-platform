@@ -3,33 +3,32 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
 from app.dependencies import SessionDep
+from app.models.orm import Ticket
 from app.models.request import CreateTicketRequest, UpdateTicketRequest
 from app.models.response import TicketItem, TicketsResponse
-from app.services.ticket_service import create_ticket, delete_ticket, get_all_tickets, get_ticket, update_ticket
-
-
-ticket_router = APIRouter(
-    prefix="/tickets",
-    tags=["tickets"]
+from app.services.ticket_service import (
+    create_ticket,
+    delete_ticket,
+    get_all_tickets,
+    get_ticket,
+    update_ticket,
 )
+
+ticket_router = APIRouter(prefix="/tickets", tags=["tickets"])
 
 
 @ticket_router.post("", response_model=TicketItem, status_code=201)
-def create_ticket_api(request: CreateTicketRequest, session: SessionDep):
-    return create_ticket(
-        session,
-        user_id=request.user_id,
-        message=request.message
-    )
+def create_ticket_api(request: CreateTicketRequest, session: SessionDep) -> Ticket:
+    return create_ticket(session, user_id=request.user_id, message=request.message)
 
 
 @ticket_router.get("", response_model=TicketsResponse, status_code=200)
-def get_all_tickets_api(session: SessionDep):
+def get_all_tickets_api(session: SessionDep) -> dict[str, list[Ticket]]:
     return {"data": get_all_tickets(session)}
 
 
 @ticket_router.get("/{ticket_id}", response_model=TicketItem, status_code=200)
-def get_ticket_api(ticket_id: UUID, session: SessionDep):
+def get_ticket_api(ticket_id: UUID, session: SessionDep) -> Ticket:
     try:
         ticket = get_ticket(session, ticket_id)
     except KeyError as e:
@@ -38,19 +37,23 @@ def get_ticket_api(ticket_id: UUID, session: SessionDep):
 
 
 @ticket_router.delete("/{ticket_id}", response_model=TicketItem, status_code=200)
-def delete_ticket_api(ticket_id: UUID, session: SessionDep):
+def delete_ticket_api(ticket_id: UUID, session: SessionDep) -> Ticket:
     try:
         ticket = delete_ticket(session, ticket_id)
     except KeyError as e:
-        raise HTTPException(status_code=404, detail=f"Delete failed: ticket {ticket_id} not found.") from e
+        raise HTTPException(
+            status_code=404, detail=f"Delete failed: ticket {ticket_id} not found."
+        ) from e
     return ticket
 
 
 @ticket_router.patch("/{ticket_id}", response_model=TicketItem, status_code=200)
-def update_ticket_api(ticket_id: UUID, request: UpdateTicketRequest, session: SessionDep):
+def update_ticket_api(ticket_id: UUID, request: UpdateTicketRequest, session: SessionDep) -> Ticket:
     request_dict = request.model_dump(exclude_unset=True)
     try:
         ticket = update_ticket(session, ticket_id, request_dict)
     except KeyError as e:
-        raise HTTPException(status_code=404, detail=f"Update failed: ticket {ticket_id} not found.") from e
+        raise HTTPException(
+            status_code=404, detail=f"Update failed: ticket {ticket_id} not found."
+        ) from e
     return ticket

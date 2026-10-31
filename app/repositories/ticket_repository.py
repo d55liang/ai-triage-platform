@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 
 from app.models.orm import Ticket
 
-
 ALLOWED_COLUMNS = ["message"]
 
 

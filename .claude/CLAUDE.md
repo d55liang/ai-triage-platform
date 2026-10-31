@@ -19,11 +19,11 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Language | Python 3.13 | |
 | API | FastAPI, Uvicorn | |
 | Validation | Pydantic v2 | |
-| Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL for simple tests |
+| Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL 17 in Docker for simple tests |
 | DB access | SQLAlchemy 2 (ORM + Core) over `psycopg`, IAM auth token per connection | |
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
-| Lint / format | None | Ruff |
-| Tests | None | pytest |
+| Lint / format | Ruff (`pyproject.toml`) | |
+| Tests | None | pytest, httpx (`TestClient`) |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -57,19 +57,26 @@ alembic revision --autogenerate -m "<what changed>"   # draft a migration from a
 alembic upgrade head --sql                            # print the SQL without connecting
 ```
 
+```bash
+ruff check .             # lint; add --fix to apply safe fixes
+ruff format .            # format; add --check to verify without writing
+```
+
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
 
-Not set up yet (do not claim these work): `ruff check .`, `ruff format .`, `pytest`.
+Not set up yet (do not claim these work): `docker compose up -d`, `pytest`, `pytest -m aurora`.
 
 ### Environment (`.env`, never committed)
 
 `AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER` (`triage_app`), `DB_NAME` (`ai_triage`). All required (`os.environ[...]`); no password, since each connection gets an IAM auth token.
 
+Planned: an optional `DATABASE_URL` selects a plain engine, and the Aurora variables are then required only when it is unset (see `DESIGN.md` §10).
+
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)).
-- **In progress:** nothing; the IAM migration branch (`refactor/iam-auth-sqlalchemy`) is ready for review.
-- **Next:** Ruff and pytest setup; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup, on `chore/ruff` until it merges (see `DESIGN.md` §13).
+- **In progress:** pytest setup, designed but not implemented. It goes on `test/pytest-setup`, branched from `main` after `chore/ruff` merges (see `DESIGN.md` §10).
+- **Next:** GitHub Actions CI; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
 
@@ -97,5 +104,7 @@ Follow the existing code. In particular:
 
 ## Testing strategy (planned)
 
-1. **Local PostgreSQL first** for simple, fast tests: repository queries, migrations, service logic.
-2. **Aurora** only for the important tests that depend on AWS behaviour, e.g. IAM token auth and connectivity. Run them deliberately, to save cost.
+1. **Local PostgreSQL first** for fast tests: API tests through `TestClient` with no mocks, plus migrations. Each test rolls back; the schema comes from Alembic.
+2. **Aurora** only for the important tests that depend on AWS behaviour, e.g. IAM token auth and connectivity. Marked `aurora`, excluded by default, and run deliberately to save cost.
+
+See `DESIGN.md` §10 and `rules/pytest.md`.
