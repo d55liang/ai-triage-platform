@@ -12,13 +12,16 @@ Status: planned. These apply once `test/pytest-setup` lands. Rationale is in `DE
 ## Database
 
 - Tests run against `postgres:17` from `docker-compose.yml`, on `127.0.0.1:5433`, in the `ai_triage_test` database, with `POSTGRES_HOST_AUTH_METHOD=trust`. Bind the port to loopback only; `trust` is safe only because of that.
-- `tests/conftest.py` hard-sets `os.environ["DATABASE_URL"]` before any `app` import. Never use `setdefault`: a stray value in the shell or `.env` must not redirect tests.
+- `tests/conftest.py` hard-sets `os.environ["DATABASE_URL"]` before any `app` import, so Ruff's `E402` is ignored for that file only. Never use `setdefault`: a stray value in the shell or `.env` must not redirect tests.
 - Build the schema with `alembic upgrade head` in a session-scoped fixture. Never use `Base.metadata.create_all()`, which would pass even with a missing migration.
 
 ## Writing tests
 
 - Test through HTTP with `TestClient`, using the real database and no mocks. Add repository or service tests only for logic HTTP can't reach.
+- Use `httpx2`, not `httpx`, for `TestClient`. Starlette deprecates `httpx` there.
 - Each test uses a session on an open transaction, supplied through `app.dependency_overrides[get_session]` and rolled back afterwards. Don't write teardown for rolled-back data.
+- The override wraps each request in `session.begin_nested()`. Without that savepoint nothing flushes, so a deleted Ticket can still be read back and `test_delete_ticket` fails.
+- Don't assert order by `created_at` inside a rolled-back test. `now()` is the transaction's start time, so every row in the test gets the same value.
 - Name files `test_<resource>_api.py` and tests `test_<behaviour>`. Assert on status codes and response bodies.
 - A test that commits for real skips the override and cleans up after itself. Keep these rare.
 - Every migration must pass the downgrade and upgrade round-trip test.

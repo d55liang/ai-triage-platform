@@ -158,7 +158,7 @@ Status: **planned**.
 - **Decision:**
   - Tests go through HTTP with `TestClient` against the real local database, with no mocks. Repository or service tests are added only for logic HTTP can't reach.
   - `alembic upgrade head` builds the schema once per test run, in a dedicated `ai_triage_test` database.
-  - Each test overrides `get_session` with a session on an open transaction that is rolled back afterwards.
+  - Each test overrides `get_session` with a session on an open transaction that is rolled back afterwards. Each request inside it runs in a savepoint, which stands in for the real commit: it flushes on success and undoes only that request on failure.
   - Three tests sit outside that pattern: one skips the override and goes through the real commit, with its own cleanup; one runs a migration downgrade and upgrade round trip; one, marked `aurora` and excluded by default, runs `SELECT 1` through the IAM engine.
 - **Why:** the layers are thin, so mocked tests would mostly repeat the code. Building the schema with Alembic means every run exercises the real migrations, including the enum `CHECK` constraint. Rollback needs no teardown, so a new table adds no cleanup work. The rollback override never commits, so the commit path needs its own test.
 - **Alternatives:** `Base.metadata.create_all()` for the schema (faster, but passes even when a migration is missing or wrong); truncating tables after each test (closer to real behaviour, but slower, and every table adds cleanup); deferring Aurora tests (a slightly simpler seam, but leaves IAM auth untested).
@@ -218,7 +218,7 @@ User message ─▶ Intake Agent (one LLM call per turn, with tools)
 
 Status: **done**.
 
-- **Decision:** Ruff for both linting and formatting, configured in `pyproject.toml`, with line length 100 and rules `E, W, F, I, UP, B, N, SIM, RUF, ANN`. `E501` is ignored because the formatter owns line length. `alembic/versions/` is excluded. Ruff, pytest and httpx stay in the single `requirements.txt` for now.
+- **Decision:** Ruff for both linting and formatting, configured in `pyproject.toml`, with line length 100 and rules `E, W, F, I, UP, B, N, SIM, RUF, ANN`. `E501` is ignored because the formatter owns line length. `alembic/versions/` is excluded. Ruff, pytest and httpx2 stay in the single `requirements.txt` for now.
 - **Why:** one fast tool replaces a linter, an import sorter and a formatter. `ANN` turns "type hints on every signature" into a check. Excluding `alembic/versions/` keeps the "never edit an applied migration" rule absolute.
 - **Alternatives:** Ruff's default length of 88 (reformats more files with no benefit here) or 120 (leaves long lines alone); adding `TRY`, `PTH`, `C4` and `ASYNC` (they found nothing today, so they wait until needed); a separate `requirements-dev.txt` (keeps dev tools out of production installs, but that doesn't matter until something deploys).
 - **Tradeoffs:** Ruff's default import order rewrites the import blocks in 7 files, and production installs include dev tools.

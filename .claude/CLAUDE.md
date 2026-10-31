@@ -23,7 +23,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | DB access | SQLAlchemy 2 (ORM + Core) over `psycopg`, IAM auth token per connection | |
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
 | Lint / format | Ruff (`pyproject.toml`) | |
-| Tests | None | pytest, httpx (`TestClient`) |
+| Tests | None | pytest, httpx2 (`TestClient`) |
 
 Technology-specific rules live in [rules/](rules/).
 
