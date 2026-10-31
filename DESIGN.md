@@ -137,7 +137,7 @@ Status: **done**.
 
 ## 10. Testing: local PostgreSQL first, Aurora for what matters
 
-Status: **planned**.
+Status: **done**.
 
 - **Decision:** run simple, fast tests against a local PostgreSQL 17 in Docker. Run the important tests that depend on AWS (IAM auth, connectivity) against Aurora, deliberately and less often.
 - **Why:** local tests are free and fast. Aurora tests catch what a local database can't, without paying for every run.
@@ -230,6 +230,5 @@ Status: **done**.
 
 - Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
-- The service layer catches `KeyError` only to re-raise it, wrapped in a second `KeyError`. Ruff doesn't flag it; the blocks are removed in the last commit of the pytest PR, once the 404 tests exist.
 - `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.
 - Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.

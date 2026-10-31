@@ -7,7 +7,7 @@ paths:
 
 # pytest rules
 
-Status: planned. These apply once `test/pytest-setup` lands. Rationale is in `DESIGN.md` §10.
+Rationale is in `DESIGN.md` §10.
 
 ## Database
 
@@ -22,7 +22,7 @@ Status: planned. These apply once `test/pytest-setup` lands. Rationale is in `DE
 - Each test uses a session on an open transaction, supplied through `app.dependency_overrides[get_session]` and rolled back afterwards. Don't write teardown for rolled-back data.
 - The override wraps each request in `session.begin_nested()`. Without that savepoint nothing flushes, so a deleted Ticket can still be read back and `test_delete_ticket` fails.
 - Don't assert order by `created_at` inside a rolled-back test. `now()` is the transaction's start time, so every row in the test gets the same value.
-- Name files `test_<resource>_api.py` and tests `test_<behaviour>`. Assert on status codes and response bodies.
+- Name files `test_<resource>_api.py` and tests `test_<behaviour>`. Pytest silently skips a function without the `test_` prefix. Assert on status codes and response bodies.
 - A test that commits for real skips the override and cleans up after itself. Keep these rare.
 - Every migration must pass the downgrade and upgrade round-trip test.
 

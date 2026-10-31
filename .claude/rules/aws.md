@@ -24,4 +24,4 @@
 - Always use TLS with `sslmode=verify-full`. The gateway's certificate chains to **Amazon Root CA 1** (public ACM chain), not the RDS CA bundle. Pin trust to `certs/AmazonRootCA1.pem` via `sslrootcert` with an absolute path. Don't use `sslrootcert=system`: the OpenSSL bundled with `psycopg[binary]` has no usable default trust store, so every verification fails. (Homebrew `psql` links its own OpenSSL, so `system` does work there.)
 - Serverless v2 auto-pauses after 300 s idle; idle pooled connections prevent it. Keep pools small, and expect a cold start of several seconds after a pause.
 - Run AWS-dependent tests deliberately and sparingly to control cost; everything else runs against local PostgreSQL. Mark them `aurora` so they stay out of the default `pytest` run (see `pytest.md`).
-- Planned: all of the IAM setup (Aurora env vars, RDS client, `do_connect` listener) moves into `create_iam_engine()` in `app/database.py`, used when `DATABASE_URL` is unset.
+- All of the IAM setup (Aurora env vars, RDS client, `do_connect` listener) lives in `create_iam_engine()` in `app/database.py`, used when `DATABASE_URL` is unset.

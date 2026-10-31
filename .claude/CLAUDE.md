@@ -19,11 +19,11 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Language | Python 3.13 | |
 | API | FastAPI, Uvicorn | |
 | Validation | Pydantic v2 | |
-| Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL 17 in Docker for simple tests |
+| Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway); local PostgreSQL 17 in Docker for tests | |
 | DB access | SQLAlchemy 2 (ORM + Core) over `psycopg`, IAM auth token per connection | |
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
 | Lint / format | Ruff (`pyproject.toml`) | |
-| Tests | None | pytest, httpx2 (`TestClient`) |
+| Tests | pytest, httpx2 (`TestClient`) | |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -41,6 +41,12 @@ app/
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
+tests/
+  conftest.py             Forces the local DATABASE_URL; migration and client fixtures
+  test_tickets_api.py     Ticket API tests through TestClient
+  test_migrations.py      Downgrade and upgrade round trip
+  test_aurora.py          IAM connectivity (marked aurora, excluded by default)
+docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433
 ```
 
 ## Commands
@@ -62,20 +68,24 @@ ruff check .             # lint; add --fix to apply safe fixes
 ruff format .            # format; add --check to verify without writing
 ```
 
-Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
+```bash
+docker compose up -d     # start the local test database (Docker must be running)
+pytest                   # run the local tests; never touches Aurora
+pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
+```
 
-Not set up yet (do not claim these work): `docker compose up -d`, `pytest`, `pytest -m aurora`.
+Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
 
 ### Environment (`.env`, never committed)
 
-`AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER` (`triage_app`), `DB_NAME` (`ai_triage`). All required (`os.environ[...]`); no password, since each connection gets an IAM auth token.
+`AWS_REGION`, `DB_HOST`, `DB_PORT`, `DB_USER` (`triage_app`), `DB_NAME` (`ai_triage`). Required (`os.environ[...]`) unless `DATABASE_URL` is set; no password, since each connection gets an IAM auth token.
 
-Planned: an optional `DATABASE_URL` selects a plain engine, and the Aurora variables are then required only when it is unset (see `DESIGN.md` §10).
+`DATABASE_URL` is optional and selects a plain engine instead of the IAM one (see `DESIGN.md` §10). `tests/conftest.py` always sets it to the local test database.
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup, on `chore/ruff` until it merges (see `DESIGN.md` §13).
-- **In progress:** pytest setup, designed but not implemented. It goes on `test/pytest-setup`, branched from `main` after `chore/ruff` merges (see `DESIGN.md` §10).
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17, on `test/pytest-setup` until it merges (see `DESIGN.md` §10).
+- **In progress:** nothing.
 - **Next:** GitHub Actions CI; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
@@ -102,7 +112,7 @@ Follow the existing code. In particular:
 
 **PR body:** use [.github/pull_request_template.md](../.github/pull_request_template.md): *Summary*, *Why*, *Changes*, *How to test*, *Design notes / tradeoffs*, *Docs updated*. Plain English, present tense, no filler. Link the `DESIGN.md` section or ADR when the PR reflects a design decision.
 
-## Testing strategy (planned)
+## Testing strategy
 
 1. **Local PostgreSQL first** for fast tests: API tests through `TestClient` with no mocks, plus migrations. Each test rolls back; the schema comes from Alembic.
 2. **Aurora** only for the important tests that depend on AWS behaviour, e.g. IAM token auth and connectivity. Marked `aurora`, excluded by default, and run deliberately to save cost.
