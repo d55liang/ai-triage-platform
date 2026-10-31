@@ -1,0 +1,12 @@
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["alembic/versions"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "N", "SIM", "RUF", "ANN"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
