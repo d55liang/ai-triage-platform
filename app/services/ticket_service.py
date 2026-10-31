@@ -1,10 +1,16 @@
-from uuid import uuid4, UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
 from app.models.enums import TicketStatus
 from app.models.orm import Ticket
-from app.repositories.ticket_repository import fetch_all_tickets, fetch_ticket, modify_ticket, save_ticket, remove_ticket
+from app.repositories.ticket_repository import (
+    fetch_all_tickets,
+    fetch_ticket,
+    modify_ticket,
+    remove_ticket,
+    save_ticket,
+)
 
 
 def create_ticket(session: Session, user_id: str, message: str) -> Ticket:
@@ -13,7 +19,7 @@ def create_ticket(session: Session, user_id: str, message: str) -> Ticket:
         "ticket_id": ticket_id,
         "user_id": user_id,
         "message": message,
-        "status": TicketStatus.CREATED
+        "status": TicketStatus.CREATED,
     }
     return save_ticket(session, ticket)
 

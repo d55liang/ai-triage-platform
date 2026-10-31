@@ -15,6 +15,8 @@ class Ticket(Base):
     user_id: Mapped[str]
     message: Mapped[str] = mapped_column(Text)
     status: Mapped[TicketStatus] = mapped_column(
-        Enum(TicketStatus, name="ticket_status", native_enum=False, create_constraint=True, length=20)
+        Enum(
+            TicketStatus, name="ticket_status", native_enum=False, create_constraint=True, length=20
+        )
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
