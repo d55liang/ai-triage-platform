@@ -1,3 +1,4 @@
+# ruff
 [tool.ruff]
 line-length = 100
 target-version = "py313"
@@ -8,5 +9,16 @@ force-exclude = true
 select = ["E", "W", "F", "I", "UP", "B", "N", "SIM", "RUF", "ANN"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# conftest.py must set DATABASE_URL before importing the app.
+"tests/conftest.py" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-third-party = ["alembic"]
+
+#pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not aurora'"
+markers = ["aurora: needs the real Aurora cluster; run deliberately with pytest -m aurora"]
