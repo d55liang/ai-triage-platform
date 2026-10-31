@@ -29,24 +29,12 @@ def get_all_tickets(session: Session) -> list[Ticket]:
 
 
 def get_ticket(session: Session, ticket_id: UUID) -> Ticket:
-    try:
-        ticket = fetch_ticket(session, ticket_id)
-    except KeyError as e:
-        raise KeyError(e) from e
-    return ticket
+    return fetch_ticket(session, ticket_id)
 
 
 def delete_ticket(session: Session, ticket_id: UUID) -> Ticket:
-    try:
-        ticket = remove_ticket(session, ticket_id)
-    except KeyError as e:
-        raise KeyError(e) from e
-    return ticket
+    return remove_ticket(session, ticket_id)
 
 
 def update_ticket(session: Session, ticket_id: UUID, params: dict) -> Ticket:
-    try:
-        ticket = modify_ticket(session, ticket_id, params)
-    except KeyError as e:
-        raise KeyError(e) from e
-    return ticket
+    return modify_ticket(session, ticket_id, params)
