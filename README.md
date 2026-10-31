@@ -10,7 +10,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **Aurora PostgreSQL 17 Serverless v2** (AWS `us-east-2`)
 - **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
 - **Ruff** for lint and format
-- Planned: pytest against a local PostgreSQL 17 in Docker (see [DESIGN.md](DESIGN.md) §10)
+- **pytest** against a local PostgreSQL 17 in Docker
 
 ## Setup
 
@@ -31,6 +31,8 @@ DB_NAME=ai_triage
 ```
 
 Write `KEY=value` with no spaces around `=`, so the file also loads in a shell (`set -a && source .env && set +a`). All five variables are required; the app stops at startup if one is missing. There is no password: each connection uses a short-lived IAM auth token.
+
+To use another PostgreSQL instead of Aurora, set the optional `DATABASE_URL`. The five variables above are then not needed.
 
 AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user.
 
@@ -57,6 +59,21 @@ With the venv active:
 ```bash
 ruff check .
 ruff format .
+```
+
+## Test
+
+Tests run against PostgreSQL 17 in Docker, so start Docker first. With the venv active:
+
+```bash
+docker compose up -d
+pytest
+```
+
+`pytest` never touches Aurora. To run the IAM connectivity test deliberately, which wakes the cluster and needs the `.env` above:
+
+```bash
+pytest -m aurora
 ```
 
 ## API

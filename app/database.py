@@ -6,47 +6,55 @@ from typing import Any
 import boto3
 from dotenv import load_dotenv
 from sqlalchemy import MetaData, create_engine, event
-from sqlalchemy.engine import Dialect
+from sqlalchemy.engine import Dialect, Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 
 # Load variables from .env file
 load_dotenv()
 
-# AWS Aurora PostgreSQL Serverless
-AWS_REGION = os.environ["AWS_REGION"]
-DB_NAME = os.environ["DB_NAME"]
-DB_HOST = os.environ["DB_HOST"]
-DB_PORT = int(os.environ["DB_PORT"])
-DB_USER = os.environ["DB_USER"]
 
 # The gateway's certificate chains to Amazon Root CA 1. psycopg[binary] bundles an
 # OpenSSL with no usable default trust store, so sslrootcert=system can't be used.
 CA_BUNDLE = Path(__file__).resolve().parent.parent / "certs" / "AmazonRootCA1.pem"
 
 
-rds_auth_client = boto3.client("rds", region_name=AWS_REGION)
+# AWS Aurora PostgreSQL Serverless
+def create_iam_engine() -> Engine:
+    """Aurora engine: every new connection gets a fresh IAM auth token."""
+    region = os.environ["AWS_REGION"]
+    host = os.environ["DB_HOST"]
+    port = int(os.environ["DB_PORT"])
+    user = os.environ["DB_USER"]
+    name = os.environ["DB_NAME"]
 
+    rds_auth_client = boto3.client("rds", region_name=region)
 
-engine = create_engine(
-    f"postgresql+psycopg://{DB_USER}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
-    connect_args={"sslmode": "verify-full", "sslrootcert": str(CA_BUNDLE)},
-    pool_size=2,
-    max_overflow=0,
-    pool_pre_ping=True,
-)
-
-
-@event.listens_for(engine, "do_connect")
-def _set_iam_token(
-    dialect: Dialect,
-    conn_rec: ConnectionPoolEntry,
-    cargs: tuple[Any, ...],
-    cparams: dict[str, Any],
-) -> None:
-    cparams["password"] = rds_auth_client.generate_db_auth_token(
-        DBHostname=DB_HOST, Port=DB_PORT, DBUsername=DB_USER, Region=AWS_REGION
+    iam_engine = create_engine(
+        f"postgresql+psycopg://{user}@{host}:{port}/{name}",
+        connect_args={"sslmode": "verify-full", "sslrootcert": str(CA_BUNDLE)},
+        pool_size=2,
+        max_overflow=0,
+        pool_pre_ping=True,
     )
+
+    @event.listens_for(iam_engine, "do_connect")
+    def _set_iam_token(
+        dialect: Dialect,
+        conn_rec: ConnectionPoolEntry,
+        cargs: tuple[Any, ...],
+        cparams: dict[str, Any],
+    ) -> None:
+        cparams["password"] = rds_auth_client.generate_db_auth_token(
+            DBHostname=host, Port=port, DBUsername=user, Region=region
+        )
+
+    return iam_engine
+
+
+# Set for local PostgreSQL; unset means Aurora.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+engine = create_engine(DATABASE_URL) if DATABASE_URL else create_iam_engine()
 
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
