@@ -9,7 +9,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **Python 3.13**, **FastAPI**, **Pydantic v2**
 - **Aurora PostgreSQL 17 Serverless v2** (AWS `us-east-2`)
 - **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
-- Planned: Ruff, pytest
+- Planned: Ruff for lint and format; pytest against a local PostgreSQL 17 in Docker (see [DESIGN.md](DESIGN.md) §10 and §13)
 
 ## Setup
 

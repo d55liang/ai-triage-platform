@@ -139,10 +139,31 @@ Status: **done**.
 
 Status: **planned**.
 
-- **Decision:** run simple, fast tests against a local PostgreSQL. Run the important tests that depend on AWS (IAM auth, connectivity) against Aurora, deliberately and less often.
+- **Decision:** run simple, fast tests against a local PostgreSQL 17 in Docker. Run the important tests that depend on AWS (IAM auth, connectivity) against Aurora, deliberately and less often.
 - **Why:** local tests are free and fast. Aurora tests catch what a local database can't, without paying for every run.
-- **Tradeoffs:** small differences between local Postgres and Aurora can slip through. Mitigated by matching the major version (17) and keeping the Aurora tests for the integration edges.
+- **Alternatives:** reuse the Homebrew PostgreSQL 18 already running on this machine (no setup, but it breaks the version match and is one more difference to defend).
+- **Tradeoffs:** small differences between local Postgres and Aurora can slip through. Mitigated by matching the major version (17) and keeping the Aurora tests for the integration edges. Docker must be running to test.
 - **Soundbite:** "Most tests run on a local Postgres for speed and cost. A small set runs against Aurora to cover IAM auth and the cloud-specific behaviour."
+
+### Choosing the engine: an optional `DATABASE_URL`
+
+- **Decision:** `app/database.py` reads an optional `DATABASE_URL`. If it is set, the app uses a plain engine on that URL; if not, it calls `create_iam_engine()`, which owns the Aurora env vars, the RDS client and the `do_connect` token listener.
+- **Why:** today `database.py` requires the Aurora variables and builds the IAM engine at import time, so importing the app ties a test to Aurora. One switch also moves Alembic to the local database, because `env.py` already uses `engine`, which makes "migrate locally first" possible.
+- **Alternatives:** a lazy `get_engine()` factory (removes import-time side effects, but changes `SessionLocal`, `get_session` and `env.py` for no benefit yet); faking the Aurora env vars in tests (the real engine would still force `verify-full` TLS and fetch IAM tokens).
+- **Tradeoffs:** one branch in `database.py`, and `DATABASE_URL` must be set before any `app` import. `tests/conftest.py` hard-sets it rather than using `setdefault`, and `load_dotenv()` doesn't override it, so nothing in a shell or `.env` can point a test run at Aurora.
+- **Soundbite:** "The app picks its engine from one optional setting. Production gets IAM auth, tests get a local URL, and the test suite forces that URL so it can't touch Aurora by accident."
+
+### Test harness: real database, rollback per test
+
+- **Decision:**
+  - Tests go through HTTP with `TestClient` against the real local database, with no mocks. Repository or service tests are added only for logic HTTP can't reach.
+  - `alembic upgrade head` builds the schema once per test run, in a dedicated `ai_triage_test` database.
+  - Each test overrides `get_session` with a session on an open transaction that is rolled back afterwards.
+  - Three tests sit outside that pattern: one skips the override and goes through the real commit, with its own cleanup; one runs a migration downgrade and upgrade round trip; one, marked `aurora` and excluded by default, runs `SELECT 1` through the IAM engine.
+- **Why:** the layers are thin, so mocked tests would mostly repeat the code. Building the schema with Alembic means every run exercises the real migrations, including the enum `CHECK` constraint. Rollback needs no teardown, so a new table adds no cleanup work. The rollback override never commits, so the commit path needs its own test.
+- **Alternatives:** `Base.metadata.create_all()` for the schema (faster, but passes even when a migration is missing or wrong); truncating tables after each test (closer to real behaviour, but slower, and every table adds cleanup); deferring Aurora tests (a slightly simpler seam, but leaves IAM auth untested).
+- **Tradeoffs:** no test forces a failed commit, so the `scope="function"` ordering isn't proven by a test. The Compose database uses `trust` auth, which keeps any password out of the repo and is safe only because the port binds to loopback and the data is disposable.
+- **Soundbite:** "Tests hit a real Postgres through the HTTP API, on a schema built by my actual migrations. Each test rolls back, so they stay isolated with no cleanup code, and one test goes through the real commit so that path is covered too."
 
 ## 11. Ticket lifecycle: a status per handoff, ending at Triage
 
@@ -193,11 +214,22 @@ User message ─▶ Intake Agent (one LLM call per turn, with tools)
 - **Scaling Triage later:** with many Workflow Definitions, match in two stages. Embedding similarity shortlists a few candidates cheaply; the LLM computes Match Confidence only for the shortlist.
 - **Soundbite:** "Platform operations are tools: fast, deterministic, few. Domain requests become Tickets and go through Triage, because matching against an open-ended, admin-defined set of workflows is what actually needs confidence scoring. The database status is the source of truth, and every transition is a compare-and-set, so a cancel can't race with a worker."
 
+## 13. Lint and format: Ruff
+
+Status: **planned**.
+
+- **Decision:** Ruff for both linting and formatting, configured in `pyproject.toml`, with line length 100 and rules `E, W, F, I, UP, B, N, SIM, RUF, ANN`. `E501` is ignored because the formatter owns line length. `alembic/versions/` is excluded. Ruff, pytest and httpx stay in the single `requirements.txt` for now.
+- **Why:** one fast tool replaces a linter, an import sorter and a formatter. `ANN` turns "type hints on every signature" into a check. Excluding `alembic/versions/` keeps the "never edit an applied migration" rule absolute.
+- **Alternatives:** Ruff's default length of 88 (reformats more files with no benefit here) or 120 (leaves long lines alone); adding `TRY`, `PTH`, `C4` and `ASYNC` (they found nothing today, so they wait until needed); a separate `requirements-dev.txt` (keeps dev tools out of production installs, but that doesn't matter until something deploys).
+- **Tradeoffs:** Ruff's default import order rewrites the import blocks in 7 files, and production installs include dev tools.
+- **Soundbite:** "Ruff handles linting and formatting in one tool, and it enforces the conventions I'd otherwise only write down, like type hints on every signature."
+
 ---
 
 ## Known gaps
 
 - Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
-- The service layer catches `KeyError` only to re-raise it unchanged.
-- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.- Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
+- The service layer catches `KeyError` only to re-raise it, wrapped in a second `KeyError`. Ruff doesn't flag it; the blocks are removed in the last commit of the pytest PR, once the 404 tests exist.
+- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.
+- Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
