@@ -22,7 +22,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Database | Aurora PostgreSQL 17 Serverless v2 (`us-east-2`, express configuration: no VPC, IAM-only internet access gateway) | Local PostgreSQL 17 in Docker for simple tests |
 | DB access | SQLAlchemy 2 (ORM + Core) over `psycopg`, IAM auth token per connection | |
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
-| Lint / format | None | Ruff (`pyproject.toml`) |
+| Lint / format | Ruff (`pyproject.toml`) | |
 | Tests | None | pytest, httpx (`TestClient`) |
 
 Technology-specific rules live in [rules/](rules/).
@@ -57,9 +57,14 @@ alembic revision --autogenerate -m "<what changed>"   # draft a migration from a
 alembic upgrade head --sql                            # print the SQL without connecting
 ```
 
+```bash
+ruff check .             # lint; add --fix to apply safe fixes
+ruff format .            # format; add --check to verify without writing
+```
+
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
 
-Not set up yet (do not claim these work): `ruff check .`, `ruff format .`, `docker compose up -d`, `pytest`, `pytest -m aurora`.
+Not set up yet (do not claim these work): `docker compose up -d`, `pytest`, `pytest -m aurora`.
 
 ### Environment (`.env`, never committed)
 
@@ -69,8 +74,8 @@ Planned: an optional `DATABASE_URL` selects a plain engine, and the Aurora varia
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)).
-- **In progress:** Ruff and pytest setup, designed but not implemented. Two PRs from `main`: `chore/ruff`, then `test/pytest-setup` (see `DESIGN.md` §10 and §13).
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup, on `chore/ruff` until it merges (see `DESIGN.md` §13).
+- **In progress:** pytest setup, designed but not implemented. It goes on `test/pytest-setup`, branched from `main` after `chore/ruff` merges (see `DESIGN.md` §10).
 - **Next:** GitHub Actions CI; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.

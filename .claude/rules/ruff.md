@@ -6,8 +6,6 @@ paths:
 
 # Ruff rules
 
-Status: planned. These apply once `chore/ruff` lands.
-
 - Configure Ruff only in `pyproject.toml`, which holds tool config and no `[project]` table.
 - Line length is 100. Target is Python 3.13.
 - Selected rules: `E, W, F, I, UP, B, N, SIM, RUF, ANN`. `E501` is ignored because the formatter owns line length.
@@ -17,5 +15,6 @@ Status: planned. These apply once `chore/ruff` lands.
 - Run `ruff check .` and `ruff format --check .` before committing. Use `--fix` and `ruff format .` to apply changes.
 - Fix the code rather than adding `# noqa`. When a `noqa` is needed, name the rule and say why (`# noqa: F401  registers the tables on Base.metadata`).
 - Add a rule family only when it would catch a real problem in this code, not to widen coverage.
+- `ruff format .` also processes tracked Markdown files, so its file count is higher than the number of Python files.
 - Keep formatting changes in their own commit, separate from behaviour changes.
 - Run Ruff from the venv. Conda's older `ruff` otherwise shadows the pinned version.

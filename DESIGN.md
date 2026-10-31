@@ -216,7 +216,7 @@ User message ─▶ Intake Agent (one LLM call per turn, with tools)
 
 ## 13. Lint and format: Ruff
 
-Status: **planned**.
+Status: **done**.
 
 - **Decision:** Ruff for both linting and formatting, configured in `pyproject.toml`, with line length 100 and rules `E, W, F, I, UP, B, N, SIM, RUF, ANN`. `E501` is ignored because the formatter owns line length. `alembic/versions/` is excluded. Ruff, pytest and httpx stay in the single `requirements.txt` for now.
 - **Why:** one fast tool replaces a linter, an import sorter and a formatter. `ANN` turns "type hints on every signature" into a check. Excluding `alembic/versions/` keeps the "never edit an applied migration" rule absolute.

@@ -15,5 +15,5 @@ paths:
 - Read configuration from environment variables (loaded from `.env` via `python-dotenv`); never hard-code secrets, ARNs or hosts. The one exception is the loopback test database URL in `tests/conftest.py`, which holds no secret.
 - Use f-strings for formatting, but **never** to build SQL with values (see `postgres.md`).
 - Docstrings only where the *why* isn't obvious; keep them to one or two lines.
-- Once Ruff is set up, code must pass `ruff check .` and `ruff format --check .` (see `ruff.md`); until then, match the existing formatting.
+- Code must pass `ruff check .` and `ruff format --check .` (see `ruff.md`).
 - Pin dependency versions in `requirements.txt` when adding new ones. Dev tools go in the same file for now.
