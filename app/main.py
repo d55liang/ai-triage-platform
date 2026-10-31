@@ -8,5 +8,5 @@ app.include_router(ticket_router, prefix="/api")
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, str]:
     return {"status": "ok"}

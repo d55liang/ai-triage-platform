@@ -1,11 +1,14 @@
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import boto3
 from dotenv import load_dotenv
 from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import ConnectionPoolEntry
 
 # Load variables from .env file
 load_dotenv()
@@ -35,7 +38,12 @@ engine = create_engine(
 
 
 @event.listens_for(engine, "do_connect")
-def _set_iam_token(dialect, conn_rec, cargs, cparams) -> None:
+def _set_iam_token(
+    dialect: Dialect,
+    conn_rec: ConnectionPoolEntry,
+    cargs: tuple[Any, ...],
+    cparams: dict[str, Any],
+) -> None:
     cparams["password"] = rds_auth_client.generate_db_auth_token(
         DBHostname=DB_HOST, Port=DB_PORT, DBUsername=DB_USER, Region=AWS_REGION
     )
