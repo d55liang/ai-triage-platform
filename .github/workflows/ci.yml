@@ -6,10 +6,10 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
-  workflow_dispatch
+  workflow_dispatch:
 
 
-permission:
+permissions:
   contents: read
 
 
@@ -30,6 +30,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
