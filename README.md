@@ -1,4 +1,5 @@
 # AI Triage Platform
+![CI](https://github.com/d55liang/ai-triage-platform/actions/workflows/ci.yml/badge.svg)
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
