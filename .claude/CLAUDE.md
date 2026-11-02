@@ -93,7 +93,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14).
 - **In progress:** nothing.
-- **Next:** make the repo public and add the `main` ruleset; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
+- **Next:** cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
 

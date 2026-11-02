@@ -226,7 +226,7 @@ Status: **done**.
 
 ## 14. CI: GitHub Actions on every PR
 
-Status: **done**, except making the repo public and adding the `main` ruleset.
+Status: **done**.
 
 - **Decision:**
   - `.github/workflows/ci.yml` runs on `pull_request` to `main` and `push` to `main`, with no path filters. `workflow_dispatch` also allows a manual run.
