@@ -11,6 +11,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
 - **Ruff** for lint and format
 - **pytest** against a local PostgreSQL 17 in Docker
+- **GitHub Actions** runs Ruff, `alembic check` and pytest on every PR
 
 ## Setup
 
@@ -74,6 +75,12 @@ pytest
 
 ```bash
 pytest -m aurora
+```
+
+To check that every model change has a migration, run this against the local test database. Without `DATABASE_URL`, Alembic connects to Aurora.
+
+```bash
+DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic check
 ```
 
 ## API

@@ -224,11 +224,28 @@ Status: **done**.
 - **Tradeoffs:** Ruff's default import order rewrites the import blocks in 7 files, and production installs include dev tools.
 - **Soundbite:** "Ruff handles linting and formatting in one tool, and it enforces the conventions I'd otherwise only write down, like type hints on every signature."
 
+## 14. CI: GitHub Actions on every PR
+
+Status: **done**, except making the repo public and adding the `main` ruleset.
+
+- **Decision:**
+  - `.github/workflows/ci.yml` runs on `pull_request` to `main` and `push` to `main`, with no path filters. `workflow_dispatch` also allows a manual run.
+  - Two jobs. `lint` runs `ruff check .` and `ruff format --check .`. `test` starts Postgres with `docker compose up -d --wait`, then runs `alembic upgrade head`, `alembic check` and `pytest`.
+  - The `test` job sets `DATABASE_URL` in `env:` for the Alembic steps, because `tests/conftest.py` only covers pytest.
+  - Aurora stays out of CI, so GitHub holds no AWS credentials.
+  - The workflow has `permissions: contents: read`, `timeout-minutes: 10` and major-version action tags.
+  - All of `requirements.txt` is pinned, so CI installs what runs locally.
+  - The repo goes public so a ruleset can protect `main`: PR required with 0 approvals, `lint` and `test` required, force pushes blocked, no bypass actors.
+- **Why:** two jobs mean a formatting failure can't hide test results, and `lint` doesn't need a database. Compose keeps one definition of the test database, so CI can't drift from local. `alembic check` catches an ORM change with no migration, which the tests can miss if nothing touches that column. Without a ruleset, a red check is only advice.
+- **Alternatives:** one job with sequential steps (simpler, but the first failure hides the rest); a GitHub `services:` block (the common pattern, but it repeats the image, port, database and auth settings); a separate `migrations` job (reports on its own, but needs a second Postgres); running `pytest -m aurora` in CI (needs an OIDC role, and wakes the cluster on every PR); pinning actions to commit SHAs (safer, but more upkeep, and CI holds no secrets); GitHub Pro (protection on a private repo, but paid).
+- **Tradeoffs:** a failed `alembic check` skips `pytest` for that run, and a failed `ruff check` skips the format check. The local database URL appears in both the workflow and `conftest.py`. `alembic check` doesn't compare `CHECK` constraints (see *Known gaps*). No bypass means even a one-line docs fix goes through a PR.
+- **Soundbite:** "Every PR runs lint, a migration drift check and the real test suite against the same Postgres I use locally, and `main` can't merge a red build. CI holds no AWS credentials, because the Aurora test is deliberately run by hand."
+
 ---
 
 ## Known gaps
 
 - Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
-- `fastapi`, `uvicorn`, `boto3` and `python_dotenv` in `requirements.txt` are unpinned.
+- `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
 - Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.

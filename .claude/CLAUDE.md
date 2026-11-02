@@ -24,6 +24,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Migrations | Alembic (`alembic/`, runs through the app's engine) | |
 | Lint / format | Ruff (`pyproject.toml`) | |
 | Tests | pytest, httpx2 (`TestClient`) | |
+| CI | GitHub Actions (`.github/workflows/ci.yml`) | |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -47,6 +48,7 @@ tests/
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433
+.github/workflows/ci.yml  Ruff, alembic check and pytest on every PR
 ```
 
 ## Commands
@@ -61,6 +63,11 @@ uvicorn app.main:app --reload      # http://localhost:8000/docs, /health, /api/t
 alembic upgrade head                                  # apply migrations (connects to Aurora as triage_app)
 alembic revision --autogenerate -m "<what changed>"   # draft a migration from app/models/orm.py; review before applying
 alembic upgrade head --sql                            # print the SQL without connecting
+```
+
+```bash
+# Check for models with no migration, against the local test database. Without DATABASE_URL this connects to Aurora.
+DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic check
 ```
 
 ```bash
@@ -84,9 +91,9 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17, on `test/pytest-setup` until it merges (see `DESIGN.md` §10).
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14).
 - **In progress:** nothing.
-- **Next:** GitHub Actions CI; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
+- **Next:** make the repo public and add the `main` ruleset; cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
 
