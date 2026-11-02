@@ -19,4 +19,5 @@ class Ticket(Base):
             TicketStatus, name="ticket_status", native_enum=False, create_constraint=True, length=20
         )
     )
+    ci_proof: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
