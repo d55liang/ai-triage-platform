@@ -18,6 +18,7 @@ Rationale is in `DESIGN.md` §10.
 ## Writing tests
 
 - Test through HTTP with `TestClient`, using the real database and no mocks. Add repository or service tests only for logic HTTP can't reach.
+- To set up a state the API can't reach, such as a `FAILED` Ticket, use the `session` fixture, which `client` shares. Keep asserting through HTTP.
 - Use `httpx2`, not `httpx`, for `TestClient`. Starlette deprecates `httpx` there.
 - Each test uses a session on an open transaction, supplied through `app.dependency_overrides[get_session]` and rolled back afterwards. Don't write teardown for rolled-back data.
 - The override wraps each request in `session.begin_nested()`. Without that savepoint nothing flushes, so a deleted Ticket can still be read back and `test_delete_ticket` fails.

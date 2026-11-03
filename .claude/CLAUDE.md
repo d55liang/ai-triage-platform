@@ -91,9 +91,9 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14).
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14).
 - **In progress:** nothing.
-- **Next:** cancel endpoint for Tickets; Conversation, Workflow Definition, Workflow Run and Triage.
+- **Next:** Conversation, Workflow Definition, Workflow Run and Triage.
 
 Update this section when a milestone starts or lands.
 
@@ -103,9 +103,9 @@ Follow the existing code. In particular:
 
 - **Layers:** router → service → repository. Each layer calls only the one below it. Routers never touch the database; repositories never raise HTTP errors.
 - **Sessions:** the caller owns the transaction. Routers take `session: SessionDep` and pass it as the first argument to the service, which passes it to the repository. Repositories never commit (see `rules/postgres.md`).
-- **Naming:** files `<resource>_router.py`, `<resource>_service.py`, `<resource>_repository.py`. Router handlers end in `_api`. Service verbs are `create/get/update/delete`; repository verbs are `save/fetch/modify/remove`.
+- **Naming:** files `<resource>_router.py`, `<resource>_service.py`, `<resource>_repository.py`. Router handlers end in `_api`. Service verbs are `create/get/update/delete`, plus domain actions such as `cancel`; repository verbs are `save/fetch/modify/remove`.
 - **Models:** request bodies in `models/request.py` (`<Action><Resource>Request`), responses in `models/response.py` (`<Resource>Item`, list wrapper `<Resource>sResponse` with a `data` field). Every field is `Annotated[..., Field(description=...)]`. Table models live in `models/orm.py`, one class per table named after the resource (`Ticket`). Keep table and API models separate; don't use SQLModel (see `DESIGN.md` §5).
-- **Errors:** repositories raise `KeyError` when a row is missing; routers translate it to `HTTPException(404)` with `raise ... from e`.
+- **Errors:** repositories raise `KeyError` when a row is missing and `ValueError` when its status doesn't allow a transition; routers translate them to `HTTPException(404)` and `HTTPException(409)` with `raise ... from e`.
 - **Routes:** always set `response_model` and `status_code`. Type path IDs as `UUID` so FastAPI rejects malformed IDs with 422.
 - **SQL:** always parameterised. Dynamic column names come only from an allowlist.
 - **Imports:** stdlib, third-party, then `app.*`, separated by a blank line.

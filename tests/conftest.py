@@ -29,16 +29,22 @@ def migrated_database(alembic_config: Config) -> None:
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
-    """API client whose writes are all undone: nothing below this session ever commits."""
+def session() -> Iterator[Session]:
+    """Shared with `client`, so a test can set up states the API can't reach yet."""
     with Session(engine, expire_on_commit=False) as session:
+        yield session
 
-        def override_get_session() -> Iterator[Session]:
-            # A savepoint stands in for the real commit: it flushes on success and
-            # rolls back only this request on failure.
-            with session.begin_nested():
-                yield session
 
-        app.dependency_overrides[get_session] = override_get_session
-        yield TestClient(app)
-        app.dependency_overrides.clear()
+@pytest.fixture
+def client(session: Session) -> Iterator[TestClient]:
+    """API client whose writes are all undone: nothing below this session ever commits."""
+
+    def override_get_session() -> Iterator[Session]:
+        # A savepoint stands in for the real commit: it flushes on success and
+        # rolls back only this request on failure.
+        with session.begin_nested():
+            yield session
+
+    app.dependency_overrides[get_session] = override_get_session
+    yield TestClient(app)
+    app.dependency_overrides.clear()

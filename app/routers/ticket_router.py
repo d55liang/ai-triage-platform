@@ -7,6 +7,7 @@ from app.models.orm import Ticket
 from app.models.request import CreateTicketRequest, UpdateTicketRequest
 from app.models.response import TicketItem, TicketsResponse
 from app.services.ticket_service import (
+    cancel_ticket,
     create_ticket,
     delete_ticket,
     get_all_tickets,
@@ -55,5 +56,20 @@ def update_ticket_api(ticket_id: UUID, request: UpdateTicketRequest, session: Se
     except KeyError as e:
         raise HTTPException(
             status_code=404, detail=f"Update failed: ticket {ticket_id} not found."
+        ) from e
+    return ticket
+
+
+@ticket_router.post("/{ticket_id}/cancel", response_model=TicketItem, status_code=200)
+def cancel_ticket_api(ticket_id: UUID, session: SessionDep) -> Ticket:
+    try:
+        ticket = cancel_ticket(session, ticket_id)
+    except KeyError as e:
+        raise HTTPException(
+            status_code=404, detail=f"Cancel failed: ticket {ticket_id} not found."
+        ) from e
+    except ValueError as e:
+        raise HTTPException(
+            status_code=409, detail=f"Cancel failed: ticket {ticket_id} cannot be cancelled."
         ) from e
     return ticket

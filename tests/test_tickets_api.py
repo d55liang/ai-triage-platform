@@ -1,7 +1,9 @@
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.main import app
@@ -26,6 +28,12 @@ def get_ticket(client: TestClient, ticket_id: str) -> dict:
     assert response.status_code == 200
     assert response.json()["ticket_id"] == ticket_id
     return response.json()
+
+
+def set_status(session: Session, ticket_id: str, status: TicketStatus) -> None:
+    """Only cancelling changes a status through the API so far, so tests set the rest directly."""
+    session.get(Ticket, UUID(ticket_id)).status = status
+    session.flush()
 
 
 def test_create_ticket(client: TestClient) -> None:
@@ -100,6 +108,50 @@ def test_delete_ticket(client: TestClient) -> None:
     assert response_get.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        TicketStatus.CREATED,
+        TicketStatus.QUEUED,
+        TicketStatus.TRIAGING,
+        TicketStatus.UNMATCHED,
+    ],
+)
+def test_cancel_ticket(client: TestClient, session: Session, status: TicketStatus) -> None:
+    ticket = create_ticket(client)
+    set_status(session, ticket["ticket_id"], status)
+
+    response = client.post(f"/api/tickets/{ticket['ticket_id']}/cancel")
+
+    assert response.status_code == 200
+    assert response.json() == {**ticket, "status": TicketStatus.CANCELLED}
+    assert get_ticket(client, ticket["ticket_id"])["status"] == TicketStatus.CANCELLED
+
+
+def test_cancel_ticket_twice_succeeds(client: TestClient) -> None:
+    ticket = create_ticket(client)
+
+    response_first = client.post(f"/api/tickets/{ticket['ticket_id']}/cancel")
+    response_second = client.post(f"/api/tickets/{ticket['ticket_id']}/cancel")
+
+    assert response_first.status_code == 200
+    assert response_second.status_code == 200
+    assert response_second.json() == response_first.json()
+
+
+@pytest.mark.parametrize("status", [TicketStatus.TRIAGED, TicketStatus.FAILED])
+def test_cancel_rejected_for_status(
+    client: TestClient, session: Session, status: TicketStatus
+) -> None:
+    ticket = create_ticket(client)
+    set_status(session, ticket["ticket_id"], status)
+
+    response = client.post(f"/api/tickets/{ticket['ticket_id']}/cancel")
+
+    assert response.status_code == 409
+    assert get_ticket(client, ticket["ticket_id"])["status"] == status
+
+
 def test_unknown_ticket_returns_404(client: TestClient) -> None:
     ticket_id = uuid4()
 
@@ -112,12 +164,18 @@ def test_unknown_ticket_returns_404(client: TestClient) -> None:
     response_delete = client.delete(f"/api/tickets/{ticket_id}")
     assert response_delete.status_code == 404
 
+    response_cancel = client.post(f"/api/tickets/{ticket_id}/cancel")
+    assert response_cancel.status_code == 404
+
 
 def test_malformed_ticket_id_returns_422(client: TestClient) -> None:
     malformed_id = "123abc"
 
     response_get = client.get(f"/api/tickets/{malformed_id}")
     assert response_get.status_code == 422
+
+    response_cancel = client.post(f"/api/tickets/{malformed_id}/cancel")
+    assert response_cancel.status_code == 422
 
 
 def test_create_ticket_commits() -> None:

@@ -1,8 +1,9 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from app.models.enums import TicketStatus
 from app.models.orm import Ticket
 
 ALLOWED_COLUMNS = ["message"]
@@ -42,4 +43,21 @@ def modify_ticket(session: Session, ticket_id: UUID, params: dict) -> Ticket:
     columns = [column for column in params if column in ALLOWED_COLUMNS]
     for column in columns:
         setattr(ticket, column, params[column])
+    return ticket
+
+
+def modify_ticket_status(
+    session: Session, ticket_id: UUID, expected: list[TicketStatus], status: TicketStatus
+) -> Ticket:
+    # Compare-and-set: checking the status in the UPDATE stops a concurrent change being overwritten.
+    ticket = session.scalars(
+        update(Ticket)
+        .where(Ticket.ticket_id == ticket_id, Ticket.status.in_(expected))
+        .values(status=status)
+        .returning(Ticket)
+    ).one_or_none()
+    if ticket is None:
+        # No row matched: fetch_ticket raises KeyError if it's missing, so past it the status is the problem.
+        fetch_ticket(session, ticket_id)
+        raise ValueError(ticket_id)
     return ticket
