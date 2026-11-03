@@ -8,9 +8,20 @@ from app.repositories.ticket_repository import (
     fetch_all_tickets,
     fetch_ticket,
     modify_ticket,
+    modify_ticket_status,
     remove_ticket,
     save_ticket,
 )
+
+# CANCELLED is included so a retried cancel succeeds.
+# TRIAGED is excluded until cancelling can also cancel the Workflow Run.
+CANCELLABLE_STATUSES = [
+    TicketStatus.CREATED,
+    TicketStatus.QUEUED,
+    TicketStatus.TRIAGING,
+    TicketStatus.UNMATCHED,
+    TicketStatus.CANCELLED,
+]
 
 
 def create_ticket(session: Session, user_id: str, message: str) -> Ticket:
@@ -38,3 +49,7 @@ def delete_ticket(session: Session, ticket_id: UUID) -> Ticket:
 
 def update_ticket(session: Session, ticket_id: UUID, params: dict) -> Ticket:
     return modify_ticket(session, ticket_id, params)
+
+
+def cancel_ticket(session: Session, ticket_id: UUID) -> Ticket:
+    return modify_ticket_status(session, ticket_id, CANCELLABLE_STATUSES, TicketStatus.CANCELLED)
