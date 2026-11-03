@@ -93,6 +93,7 @@ DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic
 | `GET` | `/api/tickets/{ticket_id}` | Get one Ticket |
 | `PATCH` | `/api/tickets/{ticket_id}` | Update `message` (status is system-managed) |
 | `DELETE` | `/api/tickets/{ticket_id}` | Delete a Ticket |
+| `POST` | `/api/tickets/{ticket_id}/cancel` | Cancel a Ticket; repeating it succeeds, and a `TRIAGED` or `FAILED` Ticket returns 409 |
 
 ## Project docs
 

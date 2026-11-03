@@ -167,7 +167,7 @@ Status: **done**.
 
 ## 11. Ticket lifecycle: a status per handoff, ending at Triage
 
-Status: **enum done**; the queue and workers that drive the transitions are planned.
+Status: **enum and cancelling done**; the queue and workers that drive the other transitions are planned.
 
 ```text
 CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ──match──▶ TRIAGED
@@ -175,7 +175,8 @@ CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ─�
    └ re-publish        └──── timeout / retry ─────┤
      (stuck in                                    └──retries used up──▶ FAILED
       CREATED)
-CANCELLED: reachable by User action from any status except FAILED and CANCELLED
+CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING and UNMATCHED
+           (TRIAGED is added once cancelling can also cancel the Workflow Run)
 ```
 
 - **Decision:** seven Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
@@ -191,6 +192,20 @@ CANCELLED: reachable by User action from any status except FAILED and CANCELLED
   - Fewer statuses (`CREATED`, `TRIAGED`): simpler, but stuck and failed Tickets are invisible.
 - **Tradeoffs:** "is the User's request done?" needs a join to the Workflow Run, or a value computed at read time. Changing the allowed values needs a hand-written migration, because Alembic autogenerate doesn't detect `CHECK` changes.
 - **Soundbite:** "Each Ticket Status is a handoff in the pipeline, so I can see exactly where a Ticket is stuck. CREATED vs QUEUED covers the dual-write problem, and TRIAGING is claimed with a conditional update so duplicate deliveries are harmless. Once triaged, progress belongs to the Workflow Run."
+
+### Cancelling: a compare-and-set in one request
+
+- **Decision:** `POST /tickets/{id}/cancel` calls `modify_ticket_status`, a compare-and-set: `UPDATE ... WHERE ticket_id = :id AND status IN (...) RETURNING ...`. The service owns the allowed statuses. A missing Ticket returns 404. A `TRIAGED` or `FAILED` Ticket returns 409 through a built-in `ValueError`. Cancelling a `CANCELLED` Ticket returns 200, because `CANCELLED` is one of the allowed statuses.
+- **Why:**
+  - A read followed by a write has a race: a worker could commit `TRIAGED` in between and the cancel would overwrite it. Here the database checks the status and writes it in one statement. Under `READ COMMITTED`, a cancel that meets an uncommitted worker update waits, re-checks the committed status, then matches no row.
+  - `TRIAGED` stays out for now. Without Workflow Runs, a status-only cancel couldn't cancel the Run, and would leave that gap once Runs exist. It joins the allowed statuses in the same change that adds Run cancellation.
+  - A retry after a lost response should succeed, because the caller's goal is already met.
+  - `status` stays out of `ALLOWED_COLUMNS`, so `PATCH` still can't change it.
+  - Cancelling is `POST` because it's a domain command with its own transition rules, not a client-supplied change. It needs no body, and the server decides whether it's allowed.
+- **What workers must do:** cancelling only protects a Ticket if workers also use compare-and-set. Claiming, finishing and the timeout back to `QUEUED` each check the expected status. The `TRIAGED` update and the Workflow Run insert share one transaction, and a worker that matches no row creates no Run.
+- **Alternatives:** `PATCH /tickets/{id}` with `{"status": "CANCELLED"}` (one fewer route, but it implies clients can set a system-managed field, and every other status value would need rejecting); `PATCH` or `PUT` on `/tickets/{id}/cancel` (no field to change and no representation to replace, so the verb means nothing); `SELECT ... FOR UPDATE`, then check and set (plain ORM, and one read tells 404 from 409, but it breaks the rule that every transition is a compare-and-set); returning 409 on a repeat cancel (stricter, but reports a failure for something that succeeded); a custom exception (more precise, but one more class where `ValueError` mirrors the `KeyError` convention).
+- **Tradeoffs:** when no row matches, a second read separates 404 from 409. `CANCELLED` in the allowed list needs a comment, and a repeat cancel writes the row again. `POST` isn't idempotent by HTTP definition, so safe retries are a promise of this API, and generic clients and proxies won't retry it automatically. A stray `ValueError` from below the service would become a 409, which the narrow `try` keeps unlikely.
+- **Soundbite:** "Cancel is one conditional `UPDATE`, so the database decides who wins a race with a worker. If the worker commits first, the cancel gets a 409. If the cancel commits first, the worker matches no row and never creates a Workflow Run. It's a `POST` because status is system-managed: cancel is a command with its own rules, not a field the client edits, and I made it behave idempotently so retries are safe."
 
 ## 12. Intake Agent: tools for platform operations, Triage for domain requests
 
@@ -245,7 +260,9 @@ Status: **done**.
 
 ## Known gaps
 
-- Cancelling has no endpoint yet. With `status` removed from `PATCH`, it needs a dedicated action (e.g. `POST /tickets/{id}/cancel`).
+- There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership.
+- A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §11).
+- The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
 - Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
