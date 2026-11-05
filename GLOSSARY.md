@@ -11,7 +11,7 @@ The natural-language exchange between a User and the Intake Agent from which Tic
 _Avoid_: Chat, session, thread
 
 **Intake Agent**:
-The AI agent the User talks to in a Conversation. It turns each distinct request into a Ticket, and acts on existing Tickets (for example cancelling one) at the User's request. It does not triage.
+The AI agent the User talks to in a Conversation. It turns each distinct request into a Ticket, acts on existing Tickets (for example cancelling one) at the User's request, and asks the User for missing Required Inputs. It does not triage.
 _Avoid_: Bot, assistant, "the agent" (ambiguous once Triage runs separately)
 
 **Ticket**:
@@ -47,10 +47,34 @@ _Avoid_: Cutoff, minimum score
 
 ### Workflows
 
+**Admin**:
+A person who authors and maintains Workflow Definitions.
+_Avoid_: Operator, author, owner
+
 **Workflow Definition**:
-A predefined template describing a kind of work, including its description, ordered steps and Confidence Threshold.
+A predefined kind of work that Triage can select, described by its description, Sample Requests, ordered Steps, Required Inputs and Confidence Threshold.
 _Avoid_: Workflow, template, playbook
 
+**Disabled**:
+Said of a Workflow Definition that Triage does not select until an Admin enables it again. Its existing Workflow Runs continue. Workflow Definitions are never deleted.
+_Avoid_: Retired, paused, archived, deleted, inactive
+
+**Sample Request**:
+An example of how a User might phrase a need that a Workflow Definition handles, shown to Triage to improve matching.
+_Avoid_: Example, sample body, utterance
+
+**Workflow Definition Version**:
+One unchangeable revision of a Workflow Definition. Every edit creates a new version, and a Workflow Run stays on the version it started from.
+_Avoid_: Revision, draft
+
+**Step**:
+One ordered instruction in a Workflow Definition, saying what to do and written for an LLM or a person to follow.
+_Avoid_: Task, action, stage
+
+**Required Input**:
+A named value a Workflow Run needs before it can start.
+_Avoid_: Field, parameter, slot
+
 **Workflow Run**:
-A single execution instance of one Workflow Definition for one Ticket. A Ticket has at most one active Workflow Run.
+A single execution instance of one Workflow Definition Version for one Ticket. It waits until its Required Inputs are supplied. A Ticket has at most one active Workflow Run.
 _Avoid_: Workflow, execution, job, run instance

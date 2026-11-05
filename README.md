@@ -94,6 +94,11 @@ DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic
 | `PATCH` | `/api/tickets/{ticket_id}` | Update `message` (status is system-managed) |
 | `DELETE` | `/api/tickets/{ticket_id}` | Delete a Ticket |
 | `POST` | `/api/tickets/{ticket_id}/cancel` | Cancel a Ticket; repeating it succeeds, and a `TRIAGED` or `FAILED` Ticket returns 409 |
+| `POST` | `/api/workflow-definitions` | Create a Workflow Definition and its version 1 (`name`, `description`, `confidence_threshold`, `steps`, `required_inputs`, `sample_requests`); a taken name returns 409 |
+| `GET` | `/api/workflow-definitions?limit=50&offset=0` | List Workflow Definitions, each with its current version |
+| `GET` | `/api/workflow-definitions/{definition_id}` | Get one Workflow Definition with its current version |
+| `PATCH` | `/api/workflow-definitions/{definition_id}` | Rename (`name` only; content changes need a new version); a taken name returns 409 |
+| `GET` | `/api/workflow-definitions/{definition_id}/versions/{version_number}` | Get one Workflow Definition Version |
 
 ## Project docs
 

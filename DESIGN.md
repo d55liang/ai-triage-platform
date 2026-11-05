@@ -4,7 +4,7 @@ Interview-prep notes: what was decided, why, what else was considered, and what 
 
 ## Overview
 
-AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11 and §12). Today only the Ticket API exists: a FastAPI backend persisting to Aurora PostgreSQL.
+AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11, §12, §15 and §16). Today only the Ticket API exists: a FastAPI backend persisting to Aurora PostgreSQL.
 
 ```text
 Client ──HTTP──▶ FastAPI
@@ -37,7 +37,7 @@ Client ──HTTP──▶ FastAPI
 ## 2. Aurora PostgreSQL Serverless v2
 
 - **Decision:** Aurora PostgreSQL 17, Serverless v2, 0–4 ACU, auto-pause after 300 s.
-- **Why:** relational data with clear relationships (Ticket → Workflow Run → Workflow Definition); scale-to-zero keeps a personal project cheap; managed backups and IAM integration.
+- **Why:** relational data with clear relationships (Ticket → Workflow Run → Workflow Definition Version → Workflow Definition); scale-to-zero keeps a personal project cheap; managed backups and IAM integration.
 - **Alternatives:** DynamoDB (cheap and serverless, but the data is relational and needs joins); RDS PostgreSQL on a fixed instance (simpler, but it bills 24/7).
 - **Tradeoffs:** cold start of several seconds after auto-pause; AWS lock-in for the cluster itself, though the SQL stays standard Postgres.
 - **Soundbite:** "My data is relational, so I chose Postgres. Serverless v2 with scale-to-zero means I only pay while I'm actually using it."
@@ -256,13 +256,147 @@ Status: **done**.
 - **Tradeoffs:** a failed `alembic check` skips `pytest` for that run, and a failed `ruff check` skips the format check. The local database URL appears in both the workflow and `conftest.py`. `alembic check` doesn't compare `CHECK` constraints (see *Known gaps*). No bypass means even a one-line docs fix goes through a PR.
 - **Soundbite:** "Every PR runs lint, a migration drift check and the real test suite against the same Postgres I use locally, and `main` can't merge a red build. CI holds no AWS credentials, because the Aurora test is deliberately run by hand."
 
+## 15. Workflow Definitions: immutable versions
+
+See [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md). Status: **designed**, not built. Planned as three PRs: tables, create and read; new versions; disable and enable.
+
+```text
+workflow_definitions                       identity: what stays the same across edits
+  definition_id         UUID PK            generated in the service (§7)
+  name                  VARCHAR(100)       UNIQUE; renamed in place, not versioned
+  is_enabled            BOOLEAN            DEFAULT true; false = Disabled
+  created_at            TIMESTAMPTZ        DEFAULT now()
+
+workflow_definition_versions               content: never updated after insert
+  version_id            UUID PK            what a Workflow Run will reference
+  definition_id         UUID FK            ON DELETE RESTRICT
+  version_number        INTEGER            UNIQUE (definition_id, version_number), which also indexes the FK
+  description           TEXT               1–2,000 characters
+  confidence_threshold  NUMERIC(3,2)       CHECK (confidence_threshold > 0 AND confidence_threshold <= 1)
+  steps                 JSONB              1–20 of {name, instructions}
+  required_inputs       JSONB              0–20 of {key, description, type}
+  sample_requests       JSONB              1–5 strings
+  created_at            TIMESTAMPTZ        DEFAULT now()
+```
+
+```text
+POST /api/workflow-definitions                     create the definition and version 1 in one transaction
+GET  /api/workflow-definitions                     list, each with its current version, paginated, Disabled included
+GET  /api/workflow-definitions/{id}                the definition with its current version
+PATCH /api/workflow-definitions/{id}               rename; 409 if the name is taken (as on create)
+GET  /api/workflow-definitions/{id}/versions/{n}   one specific version, for a Workflow Run's history
+POST /api/workflow-definitions/{id}/versions       publish a new version; the body names its base_version
+POST /api/workflow-definitions/{id}/disable        compare-and-set, idempotent
+POST /api/workflow-definitions/{id}/enable         compare-and-set, idempotent
+```
+
+- **Decision:** an Admin never edits a Workflow Definition in place. Every change, a typo fix included, publishes a new Workflow Definition Version, and a Workflow Run references the exact version it started from. Identity (`name`, enabled or not) lives in one table and content in another.
+- **Why:**
+  - A Run that is on step 3 keeps following the steps it started with, even if an Admin deletes step 2 meanwhile.
+  - History comes for free: "which threshold let this Ticket match six months ago?" is a foreign key away.
+  - A Triage worker reads a version that can't change under it, so it never matches against a half-edited definition.
+  - No row is ever updated, so content needs no locking and the ORM's blind spot for in-place JSON changes doesn't matter.
+- **Alternatives:**
+  - Edit in place and snapshot the steps and threshold onto each Run: one simple table, but every Run duplicates the content, and definitions that never got a Run keep no history.
+  - Edit in place with no snapshot: simplest, but running work silently changes and history is lost.
+  - One table keyed by `(definition_id, version)`: no join, but identity columns repeat on every row and a Run's foreign key needs both columns.
+- **Tradeoffs:** two tables, and "current version" needs a join. A rename isn't versioned, so a Run's history shows today's name. Versions accumulate forever, which is fine at Admin editing speed.
+- **Soundbite:** "Workflow Definitions are append-only. Every edit is a new immutable version and a Workflow Run pins the one it started on, so running work never changes under it and I keep a full audit trail."
+
+### Current version: the highest number, no pointer
+
+- **Decision:** the current version is the one with the highest `version_number`. Rolling back means publishing an old version's content as a new version.
+- **Why:** nothing can drift. A `current_version_id` pointer would be a second fact that must agree with the versions table.
+- **Alternatives:** a `current_version_id` column on `workflow_definitions` (rollback is one update, but it's a circular foreign key and it can point anywhere).
+- **Tradeoffs:** a rollback adds a version instead of moving a pointer, which also keeps the rollback itself in the history.
+
+### Publishing a version: `base_version` and a 409
+
+- **Decision:** `POST /{id}/versions` takes the full content plus `base_version`, the version the Admin edited. If it isn't the current version, the response is 409. If two Admins publish from v3 at the same moment, both try to insert v4. `UNIQUE (definition_id, version_number)` rejects the second one, which also becomes a 409.
+- **Why:** the Admin who loses a race finds out instead of silently overwriting the other's edit. The route says what really happens, which is creating a version, not replacing a resource.
+- **Alternatives:** `PUT /{id}` with an `If-Match` ETag (the standard HTTP form of optimistic concurrency, but `PUT` reads as overwriting something that is actually immutable).
+- **Tradeoffs:** a client must always send the full content, even to fix one word.
+- **Soundbite:** "Edits use optimistic concurrency. The client names the version it edited, and a unique constraint makes the database the referee if two Admins publish at once."
+
+### Disabling instead of deleting
+
+- **Decision:** there is no `DELETE`. `POST /disable` sets `is_enabled` to false and `POST /enable` sets it to true, each as a compare-and-set (`... WHERE definition_id = :id AND is_enabled`) that also succeeds on a repeat (as with cancelling, §11). Triage skips a Disabled definition, its active Runs finish on their versions, and its name stays reserved. Admins can publish versions while it's Disabled, so they can pause it, fix it and enable it again. Foreign keys are `ON DELETE RESTRICT`.
+- **Why:**
+  - Runs reference versions, so a deleted definition would break their history.
+  - A temporary pause and a permanent retirement behave the same for Triage. One reversible state covers both: a retired definition is one that stays Disabled.
+  - A boolean is enough: it's a two-state toggle, and nothing needs to know when it last flipped.
+  - The Triage worker checks `is_enabled` in the same transaction that creates the Run, so disabling during Triage's LLM call wins.
+- **Alternatives:**
+  - A permanent Retired state: guards against reactivating by accident, but a pause then needs a second state.
+  - Paused plus Retired: clearer intent, but two states that behave identically and a transition table to defend.
+  - Hard delete when there are no Runs: tidier, but one verb with two outcomes.
+  - A nullable `disabled_at` timestamp: also says when, but re-enabling erases it, so it can't answer "was this disabled last Tuesday?" either.
+  - A `WorkflowDefinitionStatus` enum like Ticket Status: an explicit status and room for a third state such as a Draft, but with two values it's a boolean with extra ceremony, and adding a value later needs a `CHECK` migration anyway.
+- **Tradeoffs:** Disabled definitions stay in the list forever. Nothing records when or how often a definition was disabled; that needs an event log if it ever matters. The name is **Disabled**, not Paused, because "pausing" a definition sounds as if its active Runs pause too, and they don't.
+- **Soundbite:** "Nothing that a Run can reference is ever deleted. Admins disable a Workflow Definition, which only stops Triage from selecting it, and it's reversible because a pause and a retirement look the same to Triage."
+
+### Storage: JSONB for the lists, TEXT for prose
+
+- **Decision:** Steps, Required Inputs and Sample Requests are `JSONB` columns on the version row, validated by Pydantic at the API. `name` is `VARCHAR(100)`, while `description` and Step instructions are plain-text `TEXT`. Every length limit is a Pydantic `max_length`. A Required Input has a `key` (`^[a-z][a-z0-9_]{0,49}$`, unique within the version), a `description` (1–500 characters), and a `type` of `string`, `number`, `boolean` or `date`. Every Required Input is required, so there is no optional flag.
+- **Why:**
+  - A version is immutable and always read whole, so it's one document. That means one insert and one select, and the array order is the Step order.
+  - Child tables pay off for updating or querying individual elements. Versions are never updated, and no planned feature queries inside the lists. If one does, `required_inputs @> '[{"key": "budget"}]'` with a GIN index can answer it.
+  - `JSONB` over `JSON`: it's parsed once on write and can be indexed, while `JSON` re-parses text on every read.
+  - In Postgres, `TEXT` and `VARCHAR(n)` have the same storage and speed. Long values are compressed or moved out of line automatically (TOAST). The limits exist mainly because `description` and Sample Requests go into every Triage prompt, so their length is LLM cost.
+  - A snake_case `key` and a closed set of types can go straight into a tool schema for the Intake Agent (§16).
+- **Alternatives:** child tables for Steps, Required Inputs and Sample Requests (the database enforces the structure, but it's three more tables and every edit copies all their rows); a full JSON Schema per definition for Required Inputs (standard and expressive, but it needs a validator dependency, and Admins could write schemas nothing else can handle).
+- **Tradeoffs:** the database can't enforce the inner structure, only coarse checks such as `jsonb_typeof` and `jsonb_array_length`. Every write must go through the validated API.
+- **Soundbite:** "Each version is an immutable document, so the lists are JSONB, validated by Pydantic at the edge. I'd move to child tables if I ever needed to update or query individual elements."
+
+### Confidence Threshold: `NUMERIC(3,2)`, no default
+
+- **Decision:** `NUMERIC(3,2)` with `CHECK (> 0 AND <= 1)` and no default. Triage selects a definition when Match Confidence `>=` the threshold.
+- **Why:** 0.80 is stored exactly, so the comparison at the boundary is exact. A threshold of 0 would match everything. With no default, each Admin has to choose a threshold based on how consequential the workflow is.
+- **Alternatives:** `DOUBLE PRECISION` (a plain `float` everywhere, but 0.80 is only approximate, so the boundary depends on floating-point behaviour).
+- **Tradeoffs:** Python sees `Decimal`, which Pydantic v2 writes to JSON as a string unless the response model says otherwise.
+
+### Sample Requests: dynamic context injection
+
+- **Decision:** Triage reads a definition's `name`, `description` and Sample Requests, but not its Steps or Required Inputs. When Triage runs, the current version of every enabled definition is assembled into the prompt, with 1–5 Sample Requests each (few-shot prompting). Ticket text sits in clearly delimited data, never in the instructions.
+- **Why:** Sample Requests show the model how Users actually phrase a need, which a description alone doesn't. Assembling them at runtime means an Admin's edit takes effect on the next Ticket without a deploy.
+- **Alternatives:** description only (less to maintain, but matching has only the Admin's wording to go on); choosing the Sample Requests closest to each Ticket with embeddings (scales better, but needs pgvector, an embedding model and a re-embed on every edit).
+- **Tradeoffs:** the prompt grows with every definition. The planned fix is the two-stage match in §12: an embedding shortlist first, then a prompt with only the shortlisted definitions and their Sample Requests. Ticket text is the untrusted input, so delimiting it is the first defence against prompt injection.
+- **Soundbite:** "Admins give each workflow a few Sample Requests, and Triage injects them into its prompt at runtime as few-shot examples, so improving matching is a data change, not a deploy."
+
+## 16. Required Inputs: collected after Triage
+
+Status: **planned**, with the Conversation and Workflow Run milestones.
+
+```text
+Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for inputs (one transaction)
+        │ after commit
+        ▼
+   event ─▶ Intake Agent turn: Required Inputs from the Run's version + Conversation history
+                ├─ value in Ticket.message      ─▶ accept
+                ├─ value elsewhere in history   ─▶ confirm with the User
+                └─ value missing                ─▶ ask the User
+            submit tool ─▶ service validates types and completeness ─▶ Run starts
+```
+
+- **Decision:** matching is about intent only. Triage creates the Run even when Required Inputs are missing, the Ticket becomes TRIAGED, and the Run waits. The Intake Agent learns what is missing through Run → Workflow Definition Version → `required_inputs`, which the service adds to its prompt on every turn. It submits values through a tool, and the service validates them. Values found in `Ticket.message` are accepted, and values found elsewhere in the Conversation are confirmed with the User. When Triage finishes, the worker commits and then publishes an event, which starts an Intake Agent turn with no User message. That turn writes the question into the Conversation, and the client sees it by polling at first.
+- **Why:**
+  - The Intake Agent can't collect inputs up front, because it doesn't know the workflow until Triage finishes.
+  - Keeping inputs on the Run leaves the Ticket lifecycle (§11) unchanged.
+  - A Conversation can produce several Tickets. "Get me a laptop and a monitor, budget $2000" puts a value into the history that may belong to one Ticket, both or neither, so copying it into every Run without asking could be wrong without anyone noticing.
+  - §12 makes the Intake Agent one LLM call per User turn, so nothing is running for a worker to ask. Without an agent-initiated turn, a Run would wait until the User happened to write again.
+  - As in §12, the LLM decides what to submit and the service decides whether it's valid.
+- **Alternatives:** a new Ticket Status that holds the Ticket until its inputs are complete (no half-ready Runs, but a status and a loop in the Ticket lifecycle); accepting every value found in the history (fewer questions, but the laptop and monitor mistake goes through); waiting for the User's next message (nothing to build, but Runs get stuck).
+- **Tradeoffs:** a Run can wait forever if the User never answers, and a timeout is still to be designed. Agent-initiated turns need an event consumer and a client that polls or streams. `tickets` needs a `conversation_id`.
+- **Soundbite:** "Triage only decides what the User wants. The Workflow Run then collects what it needs: the Intake Agent reuses what the User already said, confirms anything it took from elsewhere in the Conversation, and asks only for what's missing."
+
 ---
 
 ## Known gaps
 
-- There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership.
+- There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
 - A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §11).
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation, Workflow Definition, Workflow Run or Triage.
+- Nothing exists yet for Conversation, Workflow Run or Triage. Workflow Definition is designed (§15) but not built.
+- A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.
