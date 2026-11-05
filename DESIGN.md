@@ -283,6 +283,7 @@ workflow_definition_versions               content: never updated after insert
 POST /api/workflow-definitions                     create the definition and version 1 in one transaction
 GET  /api/workflow-definitions                     list, each with its current version, paginated, Disabled included
 GET  /api/workflow-definitions/{id}                the definition with its current version
+PATCH /api/workflow-definitions/{id}               rename; 409 if the name is taken (as on create)
 GET  /api/workflow-definitions/{id}/versions/{n}   one specific version, for a Workflow Run's history
 POST /api/workflow-definitions/{id}/versions       publish a new version; the body names its base_version
 POST /api/workflow-definitions/{id}/disable        compare-and-set, idempotent
@@ -336,7 +337,7 @@ POST /api/workflow-definitions/{id}/enable         compare-and-set, idempotent
 
 ### Storage: JSONB for the lists, TEXT for prose
 
-- **Decision:** Steps, Required Inputs and Sample Requests are `JSONB` columns on the version row, validated by Pydantic at the API. `name` is `VARCHAR(100)`, while `description` and Step instructions are plain-text `TEXT`. Every length limit is a Pydantic `max_length`. A Required Input has a `key` (`^[a-z][a-z0-9_]{0,49}$`, unique within the version), a `description`, and a `type` of `string`, `number`, `boolean` or `date`. Every Required Input is required, so there is no optional flag.
+- **Decision:** Steps, Required Inputs and Sample Requests are `JSONB` columns on the version row, validated by Pydantic at the API. `name` is `VARCHAR(100)`, while `description` and Step instructions are plain-text `TEXT`. Every length limit is a Pydantic `max_length`. A Required Input has a `key` (`^[a-z][a-z0-9_]{0,49}$`, unique within the version), a `description` (1–500 characters), and a `type` of `string`, `number`, `boolean` or `date`. Every Required Input is required, so there is no optional flag.
 - **Why:**
   - A version is immutable and always read whole, so it's one document. That means one insert and one select, and the array order is the Step order.
   - Child tables pay off for updating or querying individual elements. Versions are never updated, and no planned feature queries inside the lists. If one does, `required_inputs @> '[{"key": "budget"}]'` with a GIN index can answer it.
