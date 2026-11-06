@@ -49,3 +49,24 @@ def get_workflow_definition_version(
     session: Session, definition_id: UUID, version_number: int
 ) -> WorkflowDefinitionVersion:
     return fetch_workflow_definition_version(session, definition_id, version_number)
+
+
+def create_workflow_definition_version(
+    session: Session, definition_id: UUID, params: dict
+) -> WorkflowDefinitionVersion:
+    # The check rejects a stale or unknown base_version; a publish that races past it
+    # collides on UNIQUE (definition_id, version_number) instead.
+    _, current = fetch_workflow_definition(session, definition_id)
+    base_version = params["base_version"]
+    if base_version != current.version_number:
+        raise ValueError(base_version)
+    content = {key: value for key, value in params.items() if key != "base_version"}
+    return save_workflow_definition_version(
+        session,
+        {
+            "version_id": uuid4(),
+            "definition_id": definition_id,
+            "version_number": base_version + 1,
+            **content,
+        },
+    )

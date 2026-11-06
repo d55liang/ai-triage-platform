@@ -88,6 +88,13 @@ class CreateWorkflowDefinitionRequest(WorkflowDefinitionContentRequest):
     ]
 
 
+class CreateWorkflowDefinitionVersionRequest(WorkflowDefinitionContentRequest):
+    base_version: Annotated[
+        int,
+        Field(ge=1, description="Version the Admin edited; must still be the current version"),
+    ]
+
+
 class UpdateWorkflowDefinitionRequest(BaseModel):
     name: Annotated[
         str, Field(min_length=1, max_length=100, description="Unique name of the definition")
