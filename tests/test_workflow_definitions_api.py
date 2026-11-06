@@ -25,6 +25,7 @@ CONTENT_FIELDS = [
     "required_inputs",
     "sample_requests",
 ]
+CONTENT = {field: WORKFLOW_DEFINITION[field] for field in CONTENT_FIELDS}
 LIST_LENGTH = 3
 
 
@@ -37,6 +38,17 @@ def create_workflow_definition(client: TestClient, name: str = "Laptop Request")
 def get_workflow_definition(client: TestClient, definition_id: str) -> dict:
     response = client.get(f"{URL}/{definition_id}")
     assert response.status_code == 200
+    return response.json()
+
+
+def publish_version(
+    client: TestClient, definition_id: str, base_version: int, **content: object
+) -> dict:
+    response = client.post(
+        f"{URL}/{definition_id}/versions",
+        json={**CONTENT, **content, "base_version": base_version},
+    )
+    assert response.status_code == 201
     return response.json()
 
 
@@ -185,6 +197,92 @@ def test_version_number_below_one_returns_422(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_publish_version(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+
+    version = publish_version(
+        client, definition["definition_id"], 1, description="Order a laptop or a tablet"
+    )
+
+    assert version["version_number"] == 2
+    assert {field: version[field] for field in CONTENT_FIELDS} == {
+        **CONTENT,
+        "description": "Order a laptop or a tablet",
+    }
+    assert get_workflow_definition(client, definition["definition_id"]) == {
+        **definition,
+        "current_version": version,
+    }
+
+
+def test_publish_keeps_previous_version(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    publish_version(client, definition["definition_id"], 1, confidence_threshold="0.90")
+
+    response = client.get(f"{URL}/{definition['definition_id']}/versions/1")
+
+    assert response.status_code == 200
+    assert response.json() == definition["current_version"]
+
+
+def test_current_version_is_highest(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    publish_version(client, definition["definition_id"], 1)
+    latest = publish_version(client, definition["definition_id"], 2)
+
+    response = client.get(URL)
+    assert response.status_code == 200
+
+    [listed] = response.json()["data"]
+    assert latest["version_number"] == 3
+    assert listed["current_version"] == latest
+    assert get_workflow_definition(client, definition["definition_id"])["current_version"] == latest
+
+
+def test_publish_accepts_identical_content(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+
+    version = publish_version(client, definition["definition_id"], 1)
+
+    assert version["version_number"] == 2
+    assert {field: version[field] for field in CONTENT_FIELDS} == CONTENT
+
+
+@pytest.mark.parametrize("base_version", [1, 3], ids=["stale", "ahead of current"])
+def test_publish_rejects_base_version_not_current(client: TestClient, base_version: int) -> None:
+    definition = create_workflow_definition(client)
+    current = publish_version(client, definition["definition_id"], 1)
+
+    response = client.post(
+        f"{URL}/{definition['definition_id']}/versions",
+        json={**CONTENT, "description": "Lost edit", "base_version": base_version},
+    )
+
+    assert response.status_code == 409
+    assert (
+        get_workflow_definition(client, definition["definition_id"])["current_version"] == current
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        CONTENT,
+        {**CONTENT, "base_version": 0},
+        {**CONTENT, "base_version": "latest"},
+        {**CONTENT, "steps": [], "base_version": 1},
+    ],
+    ids=["missing base_version", "base_version zero", "base_version not a number", "no steps"],
+)
+def test_publish_rejects_invalid_body(client: TestClient, body: dict) -> None:
+    definition = create_workflow_definition(client)
+
+    response = client.post(f"{URL}/{definition['definition_id']}/versions", json=body)
+
+    assert response.status_code == 422
+    assert get_workflow_definition(client, definition["definition_id"]) == definition
+
+
 def test_rename_workflow_definition(client: TestClient) -> None:
     definition = create_workflow_definition(client)
 
@@ -238,6 +336,11 @@ def test_unknown_workflow_definition_returns_404(client: TestClient) -> None:
     response_version = client.get(f"{URL}/{definition_id}/versions/1")
     assert response_version.status_code == 404
 
+    response_publish = client.post(
+        f"{URL}/{definition_id}/versions", json={**CONTENT, "base_version": 1}
+    )
+    assert response_publish.status_code == 404
+
 
 def test_malformed_workflow_definition_id_returns_422(client: TestClient) -> None:
     malformed_id = "123abc"
@@ -247,3 +350,8 @@ def test_malformed_workflow_definition_id_returns_422(client: TestClient) -> Non
 
     response_version = client.get(f"{URL}/{malformed_id}/versions/1")
     assert response_version.status_code == 422
+
+    response_publish = client.post(
+        f"{URL}/{malformed_id}/versions", json={**CONTENT, "base_version": 1}
+    )
+    assert response_publish.status_code == 422
