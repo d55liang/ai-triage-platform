@@ -36,7 +36,6 @@ def _select_with_current_version() -> Select[DefinitionWithVersion]:
 
 def _flush_unique_name(session: Session, name: str) -> None:
     # Flushing here, not at commit, turns a duplicate name into a 409 instead of a 500.
-    # The name is the only unique constraint a client can violate.
     try:
         session.flush()
     except IntegrityError as e:
@@ -53,7 +52,13 @@ def save_workflow_definition(session: Session, definition: dict) -> WorkflowDefi
 def save_workflow_definition_version(session: Session, version: dict) -> WorkflowDefinitionVersion:
     row = WorkflowDefinitionVersion(**version)
     session.add(row)
-    session.flush()
+    # A publish that raced past the base_version check collides on
+    # UNIQUE (definition_id, version_number).
+    try:
+        session.flush()
+    except IntegrityError as e:
+        # Turns a version collision into a 409 instead of a 500.
+        raise ValueError(version["version_number"]) from e
     return row
 
 

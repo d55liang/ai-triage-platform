@@ -36,10 +36,9 @@ class RequiredInputRequest(BaseModel):
     type: Annotated[RequiredInputType, Field(description="Type of the input's value")]
 
 
-class CreateWorkflowDefinitionRequest(BaseModel):
-    name: Annotated[
-        str, Field(min_length=1, max_length=100, description="Unique name of the definition")
-    ]
+class WorkflowDefinitionContentRequest(BaseModel):
+    """Content of a Workflow Definition Version, shared by create and publish."""
+
     description: Annotated[
         str,
         Field(
@@ -81,6 +80,19 @@ class CreateWorkflowDefinitionRequest(BaseModel):
         if len(keys) != len(set(keys)):
             raise ValueError("Required Input keys must be unique")
         return required_inputs
+
+
+class CreateWorkflowDefinitionRequest(WorkflowDefinitionContentRequest):
+    name: Annotated[
+        str, Field(min_length=1, max_length=100, description="Unique name of the definition")
+    ]
+
+
+class CreateWorkflowDefinitionVersionRequest(WorkflowDefinitionContentRequest):
+    base_version: Annotated[
+        int,
+        Field(ge=1, description="Version the Admin edited; must still be the current version"),
+    ]
 
 
 class UpdateWorkflowDefinitionRequest(BaseModel):

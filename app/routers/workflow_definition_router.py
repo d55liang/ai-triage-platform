@@ -5,7 +5,11 @@ from fastapi import APIRouter, HTTPException, Path, Query
 
 from app.dependencies import SessionDep
 from app.models.orm import WorkflowDefinition, WorkflowDefinitionVersion
-from app.models.request import CreateWorkflowDefinitionRequest, UpdateWorkflowDefinitionRequest
+from app.models.request import (
+    CreateWorkflowDefinitionRequest,
+    CreateWorkflowDefinitionVersionRequest,
+    UpdateWorkflowDefinitionRequest,
+)
 from app.models.response import (
     WorkflowDefinitionItem,
     WorkflowDefinitionsResponse,
@@ -13,6 +17,7 @@ from app.models.response import (
 )
 from app.services.workflow_definition_service import (
     create_workflow_definition,
+    create_workflow_definition_version,
     get_all_workflow_definitions,
     get_workflow_definition,
     get_workflow_definition_version,
@@ -109,5 +114,27 @@ def get_workflow_definition_version_api(
         raise HTTPException(
             status_code=404,
             detail=f"Version {version_number} of workflow definition {definition_id} not found.",
+        ) from e
+    return version
+
+
+@workflow_definition_router.post(
+    "/{definition_id}/versions", response_model=WorkflowDefinitionVersionItem, status_code=201
+)
+def create_workflow_definition_version_api(
+    definition_id: UUID, request: CreateWorkflowDefinitionVersionRequest, session: SessionDep
+) -> WorkflowDefinitionVersion:
+    try:
+        version = create_workflow_definition_version(session, definition_id, request.model_dump())
+    except KeyError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Publish failed: workflow definition {definition_id} not found.",
+        ) from e
+    except ValueError as e:
+        # Raised for a stale or unknown base_version, and when another publish won the race.
+        raise HTTPException(
+            status_code=409,
+            detail=f"Publish failed: version {request.base_version} is not the current version.",
         ) from e
     return version

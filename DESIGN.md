@@ -313,8 +313,11 @@ POST /api/workflow-definitions/{id}/enable         compare-and-set, idempotent
 ### Publishing a version: `base_version` and a 409
 
 - **Decision:** `POST /{id}/versions` takes the full content plus `base_version`, the version the Admin edited. If it isn't the current version, the response is 409. If two Admins publish from v3 at the same moment, both try to insert v4. `UNIQUE (definition_id, version_number)` rejects the second one, which also becomes a 409.
+- **How:** the service compares `base_version` with the current version and inserts `base_version + 1`, never `max + 1` from the read. The read and the insert aren't atomic, and they don't need to be: the inserted number doesn't depend on the read. The check rejects a `base_version` that is stale and one that is ahead of current, which the constraint alone would miss (`base_version` 9 would insert v10 and leave a gap). The constraint catches a publish that races past the check.
 - **Why:** the Admin who loses a race finds out instead of silently overwriting the other's edit. The route says what really happens, which is creating a version, not replacing a resource.
-- **Alternatives:** `PUT /{id}` with an `If-Match` ETag (the standard HTTP form of optimistic concurrency, but `PUT` reads as overwriting something that is actually immutable).
+- **Alternatives:**
+  - `PUT /{id}` with an `If-Match` ETag (the standard HTTP form of optimistic concurrency, but `PUT` reads as overwriting something that is actually immutable).
+  - A `SELECT ... FOR UPDATE` lock on the definition row, which serialises publishers so the check and the insert act as one step. Every publish then waits on the lock to guard against a collision that almost never happens, and the constraint is still needed as the safety net.
 - **Tradeoffs:** a client must always send the full content, even to fix one word.
 - **Soundbite:** "Edits use optimistic concurrency. The client names the version it edited, and a unique constraint makes the database the referee if two Admins publish at once."
 
