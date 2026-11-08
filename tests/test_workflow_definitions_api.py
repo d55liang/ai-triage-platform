@@ -52,6 +52,12 @@ def publish_version(
     return response.json()
 
 
+def set_enabled(client: TestClient, definition_id: str, action: str) -> dict:
+    response = client.post(f"{URL}/{definition_id}/{action}")
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_create_workflow_definition(client: TestClient) -> None:
     definition = create_workflow_definition(client)
 
@@ -324,6 +330,73 @@ def test_patch_rejects_null_name(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_disable_workflow_definition(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+
+    disabled = set_enabled(client, definition["definition_id"], "disable")
+
+    assert disabled == {**definition, "is_enabled": False}
+    assert get_workflow_definition(client, definition["definition_id"]) == disabled
+
+
+def test_enable_workflow_definition(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    set_enabled(client, definition["definition_id"], "disable")
+
+    enabled = set_enabled(client, definition["definition_id"], "enable")
+
+    assert enabled == definition
+    assert get_workflow_definition(client, definition["definition_id"]) == definition
+
+
+@pytest.mark.parametrize(
+    ("actions", "is_enabled"),
+    [(["disable", "disable"], False), (["enable"], True)],
+    ids=["disable twice", "enable when enabled"],
+)
+def test_repeated_action_succeeds(client: TestClient, actions: list[str], is_enabled: bool) -> None:
+    definition = create_workflow_definition(client)
+
+    for action in actions:
+        result = set_enabled(client, definition["definition_id"], action)
+
+    assert result == {**definition, "is_enabled": is_enabled}
+
+
+def test_disabled_workflow_definition_is_still_readable(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    disabled = set_enabled(client, definition["definition_id"], "disable")
+
+    response_list = client.get(URL)
+    assert response_list.status_code == 200
+    assert response_list.json()["data"] == [disabled]
+
+    response_version = client.get(f"{URL}/{definition['definition_id']}/versions/1")
+    assert response_version.status_code == 200
+    assert response_version.json() == definition["current_version"]
+
+
+def test_publish_version_while_disabled(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    set_enabled(client, definition["definition_id"], "disable")
+
+    version = publish_version(client, definition["definition_id"], 1)
+
+    assert get_workflow_definition(client, definition["definition_id"]) == {
+        **definition,
+        "is_enabled": False,
+        "current_version": version,
+    }
+
+
+def test_disabled_name_stays_reserved(client: TestClient) -> None:
+    definition = create_workflow_definition(client)
+    set_enabled(client, definition["definition_id"], "disable")
+
+    response = client.post(URL, json=WORKFLOW_DEFINITION)
+    assert response.status_code == 409
+
+
 def test_unknown_workflow_definition_returns_404(client: TestClient) -> None:
     definition_id = uuid4()
 
@@ -341,6 +414,10 @@ def test_unknown_workflow_definition_returns_404(client: TestClient) -> None:
     )
     assert response_publish.status_code == 404
 
+    for action in ["disable", "enable"]:
+        response_action = client.post(f"{URL}/{definition_id}/{action}")
+        assert response_action.status_code == 404
+
 
 def test_malformed_workflow_definition_id_returns_422(client: TestClient) -> None:
     malformed_id = "123abc"
@@ -355,3 +432,7 @@ def test_malformed_workflow_definition_id_returns_422(client: TestClient) -> Non
         f"{URL}/{malformed_id}/versions", json={**CONTENT, "base_version": 1}
     )
     assert response_publish.status_code == 422
+
+    for action in ["disable", "enable"]:
+        response_action = client.post(f"{URL}/{malformed_id}/{action}")
+        assert response_action.status_code == 422
