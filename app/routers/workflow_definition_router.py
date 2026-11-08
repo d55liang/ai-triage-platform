@@ -18,6 +18,8 @@ from app.models.response import (
 from app.services.workflow_definition_service import (
     create_workflow_definition,
     create_workflow_definition_version,
+    disable_workflow_definition,
+    enable_workflow_definition,
     get_all_workflow_definitions,
     get_workflow_definition,
     get_workflow_definition_version,
@@ -138,3 +140,36 @@ def create_workflow_definition_version_api(
             detail=f"Publish failed: version {request.base_version} is not the current version.",
         ) from e
     return version
+
+
+# Disable and enable succeed from either state, so unlike cancelling there is no 409.
+@workflow_definition_router.post(
+    "/{definition_id}/disable", response_model=WorkflowDefinitionItem, status_code=200
+)
+def disable_workflow_definition_api(
+    definition_id: UUID, session: SessionDep
+) -> WorkflowDefinitionItem:
+    try:
+        definition, version = disable_workflow_definition(session, definition_id)
+    except KeyError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Disable failed: workflow definition {definition_id} not found.",
+        ) from e
+    return _to_item(definition, version)
+
+
+@workflow_definition_router.post(
+    "/{definition_id}/enable", response_model=WorkflowDefinitionItem, status_code=200
+)
+def enable_workflow_definition_api(
+    definition_id: UUID, session: SessionDep
+) -> WorkflowDefinitionItem:
+    try:
+        definition, version = enable_workflow_definition(session, definition_id)
+    except KeyError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Enable failed: workflow definition {definition_id} not found.",
+        ) from e
+    return _to_item(definition, version)

@@ -286,8 +286,8 @@ GET  /api/workflow-definitions/{id}                the definition with its curre
 PATCH /api/workflow-definitions/{id}               rename; 409 if the name is taken (as on create)
 GET  /api/workflow-definitions/{id}/versions/{n}   one specific version, for a Workflow Run's history
 POST /api/workflow-definitions/{id}/versions       publish a new version; the body names its base_version
-POST /api/workflow-definitions/{id}/disable        compare-and-set, idempotent
-POST /api/workflow-definitions/{id}/enable         compare-and-set, idempotent
+POST /api/workflow-definitions/{id}/disable        set is_enabled to false; a repeat succeeds
+POST /api/workflow-definitions/{id}/enable         set is_enabled to true; a repeat succeeds
 ```
 
 - **Decision:** an Admin never edits a Workflow Definition in place. Every change, a typo fix included, publishes a new Workflow Definition Version, and a Workflow Run references the exact version it started from. Identity (`name`, enabled or not) lives in one table and content in another.
@@ -323,11 +323,12 @@ POST /api/workflow-definitions/{id}/enable         compare-and-set, idempotent
 
 ### Disabling instead of deleting
 
-- **Decision:** there is no `DELETE`. `POST /disable` sets `is_enabled` to false and `POST /enable` sets it to true, each as a compare-and-set (`... WHERE definition_id = :id AND is_enabled`) that also succeeds on a repeat (as with cancelling, §11). Triage skips a Disabled definition, its active Runs finish on their versions, and its name stays reserved. Admins can publish versions while it's Disabled, so they can pause it, fix it and enable it again. Foreign keys are `ON DELETE RESTRICT`.
+- **Decision:** there is no `DELETE`. `POST /disable` sets `is_enabled` to false and `POST /enable` sets it to true, each as a plain write that also succeeds on a repeat (as with cancelling, §11). Triage skips a Disabled definition, its active Runs finish on their versions, and its name stays reserved. Admins can publish versions while it's Disabled, so they can pause it, fix it and enable it again. Foreign keys are `ON DELETE RESTRICT`.
 - **Why:**
   - Runs reference versions, so a deleted definition would break their history.
   - A temporary pause and a permanent retirement behave the same for Triage. One reversible state covers both: a retired definition is one that stays Disabled.
   - A boolean is enough: it's a two-state toggle, and nothing needs to know when it last flipped.
+  - No compare-and-set, unlike cancelling. Cancel needs `WHERE status IN (...)` because some statuses forbid it and must return 409 atomically. Here every starting state is allowed, so there is no 409 to protect, and concurrent disable and enable resolve as last commit wins, which is right for a toggle. Setting an unchanged value also sends no `UPDATE`.
   - The Triage worker checks `is_enabled` in the same transaction that creates the Run, so disabling during Triage's LLM call wins.
 - **Alternatives:**
   - A permanent Retired state: guards against reactivating by accident, but a pause then needs a second state.

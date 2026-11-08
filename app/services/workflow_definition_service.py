@@ -9,6 +9,7 @@ from app.repositories.workflow_definition_repository import (
     fetch_workflow_definition,
     fetch_workflow_definition_version,
     modify_workflow_definition,
+    modify_workflow_definition_enabled,
     save_workflow_definition,
     save_workflow_definition_version,
 )
@@ -70,3 +71,13 @@ def create_workflow_definition_version(
             **content,
         },
     )
+
+
+def disable_workflow_definition(session: Session, definition_id: UUID) -> DefinitionWithVersion:
+    modify_workflow_definition_enabled(session, definition_id, is_enabled=False)
+    return fetch_workflow_definition(session, definition_id)
+
+
+def enable_workflow_definition(session: Session, definition_id: UUID) -> DefinitionWithVersion:
+    modify_workflow_definition_enabled(session, definition_id, is_enabled=True)
+    return fetch_workflow_definition(session, definition_id)
