@@ -110,3 +110,15 @@ def modify_workflow_definition(
         setattr(definition, column, params[column])
     _flush_unique_name(session, definition.name)
     return definition
+
+
+def modify_workflow_definition_enabled(
+    session: Session, definition_id: UUID, is_enabled: bool
+) -> WorkflowDefinition:
+    # A plain set, not a compare-and-set: every starting state is allowed, so last commit wins.
+    definition = session.get(WorkflowDefinition, definition_id)
+    if definition is None:
+        raise KeyError(definition_id)
+    definition.is_enabled = is_enabled
+    session.flush()
+    return definition
