@@ -100,6 +100,8 @@ DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic
 | `PATCH` | `/api/workflow-definitions/{definition_id}` | Rename (`name` only; content changes need a new version); a taken name returns 409 |
 | `GET` | `/api/workflow-definitions/{definition_id}/versions/{version_number}` | Get one Workflow Definition Version |
 | `POST` | `/api/workflow-definitions/{definition_id}/versions` | Publish a new version (full content plus `base_version`, the version that was edited); a `base_version` that isn't current returns 409 |
+| `POST` | `/api/workflow-definitions/{definition_id}/disable` | Disable a Workflow Definition so Triage skips it; repeating it succeeds |
+| `POST` | `/api/workflow-definitions/{definition_id}/enable` | Enable a Disabled Workflow Definition again; repeating it succeeds |
 
 ## Project docs
 
