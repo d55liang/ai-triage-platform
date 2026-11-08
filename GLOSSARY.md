@@ -26,7 +26,7 @@ Where a Ticket is in its Triage lifecycle. Only the system changes it, except th
 - **TRIAGED**: a Workflow Definition was selected and its Workflow Run created. The Ticket's lifecycle ends here; the work's progress is the Workflow Run's own status.
 - **UNMATCHED**: Triage finished, but no Workflow Definition met its Confidence Threshold.
 - **FAILED**: Triage could not finish, even after retries.
-- **CANCELLED**: the User withdrew the Ticket. Cancelling a TRIAGED Ticket also cancels its active Workflow Run.
+- **CANCELLED**: the User withdrew the Ticket. Cancelling a TRIAGED Ticket also cancels its Workflow Run; a Ticket whose Run is COMPLETED or FAILED can't be cancelled.
 
 A deleted Ticket no longer exists; deletion is not a status.
 _Avoid_: State, PENDING, COMPLETED, CLOSED
@@ -76,5 +76,16 @@ A named value a Workflow Run needs before it can start.
 _Avoid_: Field, parameter, slot
 
 **Workflow Run**:
-A single execution instance of one Workflow Definition Version for one Ticket. It waits until its Required Inputs are supplied. A Ticket has at most one active Workflow Run.
+A single execution instance of one Workflow Definition Version for one Ticket. It waits until its Required Inputs are supplied. A Ticket has at most one Workflow Run, created by Triage.
 _Avoid_: Workflow, execution, job, run instance
+
+**Workflow Run Status**:
+Where a Workflow Run is in its own lifecycle, which starts when Triage creates it.
+- **AWAITING_INPUTS**: at least one Required Input is still missing.
+- **READY**: every Required Input is supplied, and it is waiting to be carried out. A Run whose version has no Required Inputs starts here.
+- **RUNNING**: its Steps are being carried out.
+- **COMPLETED**: every Step is done.
+- **FAILED**: it could not finish.
+- **CANCELLED**: withdrawn because the User cancelled its Ticket.
+
+_Avoid_: PENDING, DONE, ACTIVE
