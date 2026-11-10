@@ -47,6 +47,11 @@ def delete_ticket_api(ticket_id: UUID, session: SessionDep) -> Ticket:
         raise HTTPException(
             status_code=404, detail=f"Delete failed: ticket {ticket_id} not found."
         ) from e
+    except ValueError as e:
+        # A triaged Ticket keeps its Workflow Run's history, so it can be cancelled but not deleted.
+        raise HTTPException(
+            status_code=409, detail=f"Delete failed: ticket {ticket_id} has a workflow run."
+        ) from e
     return ticket
 
 
@@ -71,8 +76,10 @@ def cancel_ticket_api(ticket_id: UUID, session: SessionDep) -> Ticket:
             status_code=404, detail=f"Cancel failed: ticket {ticket_id} not found."
         ) from e
     except ValueError as e:
+        # Either the Ticket's status, or its Workflow Run has already finished.
         raise HTTPException(
-            status_code=409, detail=f"Cancel failed: ticket {ticket_id} cannot be cancelled."
+            status_code=409,
+            detail=f"Cancel failed: ticket {ticket_id} or its workflow run cannot be cancelled.",
         ) from e
     return ticket
 

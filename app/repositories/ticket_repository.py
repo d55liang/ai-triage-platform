@@ -1,12 +1,14 @@
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.enums import TicketStatus
 from app.models.orm import Ticket
 
 ALLOWED_COLUMNS = ["message"]
+RUN_FOREIGN_KEY = "fk_workflow_runs_ticket_id_tickets"
 
 
 def save_ticket(session: Session, ticket: dict) -> Ticket:
@@ -33,6 +35,14 @@ def remove_ticket(session: Session, ticket_id: UUID) -> Ticket:
     if ticket is None:
         raise KeyError(ticket_id)
     session.delete(ticket)
+    # Flushing here, not at commit, turns a Ticket with a Workflow Run into a 409 instead of a 500.
+    try:
+        session.flush()
+    except IntegrityError as e:
+        # Only this foreign key means "has a Run"; any other violation is a real error.
+        if e.orig.diag.constraint_name != RUN_FOREIGN_KEY:
+            raise
+        raise ValueError(ticket_id) from e
     return ticket
 
 

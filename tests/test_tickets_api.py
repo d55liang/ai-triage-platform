@@ -139,7 +139,8 @@ def test_cancel_ticket_twice_succeeds(client: TestClient) -> None:
     assert response_second.json() == response_first.json()
 
 
-@pytest.mark.parametrize("status", [TicketStatus.TRIAGED, TicketStatus.FAILED])
+# A TRIAGED Ticket always has a Run, so its cancel tests are in test_workflow_runs_api.py.
+@pytest.mark.parametrize("status", [TicketStatus.FAILED])
 def test_cancel_rejected_for_status(
     client: TestClient, session: Session, status: TicketStatus
 ) -> None:
