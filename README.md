@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket CRUD API persists to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. The agent and workflows are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
 
 ## Tech stack
 
@@ -102,6 +102,8 @@ DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic
 | `POST` | `/api/workflow-definitions/{definition_id}/versions` | Publish a new version (full content plus `base_version`, the version that was edited); a `base_version` that isn't current returns 409 |
 | `POST` | `/api/workflow-definitions/{definition_id}/disable` | Disable a Workflow Definition so Triage skips it; repeating it succeeds |
 | `POST` | `/api/workflow-definitions/{definition_id}/enable` | Enable a Disabled Workflow Definition again; repeating it succeeds |
+| `GET` | `/api/workflow-runs/{run_id}` | Get one Workflow Run, with its version's `definition_id` and `version_number`, and the `missing_inputs` it still needs |
+| `GET` | `/api/tickets/{ticket_id}/workflow-run` | Get a Ticket's Workflow Run; 404 if the Ticket is missing or hasn't been triaged |
 
 ## Project docs
 

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import RequiredInputType, TicketStatus
+from app.models.enums import RequiredInputType, TicketStatus, WorkflowRunStatus
 
 
 class TicketItem(BaseModel):
@@ -68,3 +68,20 @@ class WorkflowDefinitionItem(BaseModel):
 
 class WorkflowDefinitionsResponse(BaseModel):
     data: Annotated[list[WorkflowDefinitionItem], Field(description="Page of workflow definitions")]
+
+
+class WorkflowRunItem(BaseModel):
+    # Built from a Run, its version and a computed list, so there is no from_attributes.
+    run_id: Annotated[UUID, Field(description="Main ID of the run")]
+    ticket_id: Annotated[UUID, Field(description="Ticket the run was created for")]
+    version_id: Annotated[UUID, Field(description="Workflow Definition Version the run follows")]
+    definition_id: Annotated[UUID, Field(description="Workflow Definition the version belongs to")]
+    version_number: Annotated[int, Field(description="Number of the version the run follows")]
+    status: Annotated[WorkflowRunStatus, Field(description="Status of the run")]
+    inputs: Annotated[
+        dict[str, str | float | bool], Field(description="Required Input values supplied so far")
+    ]
+    missing_inputs: Annotated[
+        list[str], Field(description="Keys of the Required Inputs not yet supplied")
+    ]
+    created_at: Annotated[datetime, Field(description="Creation time of the run")]

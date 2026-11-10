@@ -4,7 +4,7 @@ Interview-prep notes: what was decided, why, what else was considered, and what 
 
 ## Overview
 
-AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11, §12, §15 and §16). Today only the Ticket API exists: a FastAPI backend persisting to Aurora PostgreSQL.
+AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11, §12 and §15–§17). Today the Ticket and Workflow Definition APIs exist: a FastAPI backend persisting to Aurora PostgreSQL.
 
 ```text
 Client ──HTTP──▶ FastAPI
@@ -176,7 +176,7 @@ CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ─�
      (stuck in                                    └──retries used up──▶ FAILED
       CREATED)
 CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING and UNMATCHED
-           (TRIAGED is added once cancelling can also cancel the Workflow Run)
+           (TRIAGED is added with Workflow Runs, which cancelling also cancels; see §17)
 ```
 
 - **Decision:** seven Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
@@ -258,7 +258,7 @@ Status: **done**.
 
 ## 15. Workflow Definitions: immutable versions
 
-See [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md). Status: **designed**, not built. Planned as three PRs: tables, create and read; new versions; disable and enable.
+See [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md). Status: **done**, built in three PRs: tables, create and read; new versions; disable and enable.
 
 ```text
 workflow_definitions                       identity: what stays the same across edits
@@ -369,7 +369,7 @@ POST /api/workflow-definitions/{id}/enable         set is_enabled to true; a rep
 
 ## 16. Required Inputs: collected after Triage
 
-Status: **planned**, with the Conversation and Workflow Run milestones.
+Status: **planned**. Input submission and validation come with the Workflow Run milestone (§17); the Intake Agent turn that collects them comes with Conversation.
 
 ```text
 Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for inputs (one transaction)
@@ -393,14 +393,123 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
 - **Tradeoffs:** a Run can wait forever if the User never answers, and a timeout is still to be designed. Agent-initiated turns need an event consumer and a client that polls or streams. `tickets` needs a `conversation_id`.
 - **Soundbite:** "Triage only decides what the User wants. The Workflow Run then collects what it needs: the Intake Agent reuses what the User already said, confirms anything it took from elsewhere in the Conversation, and asks only for what's missing."
 
+## 17. Workflow Runs: one per Ticket, pinned to a version
+
+Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission; cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
+
+```text
+workflow_runs
+  run_id      UUID PK        generated in the service (§7)
+  ticket_id   UUID FK        UNIQUE: one Run per Ticket, ever, and its index serves the FK; ON DELETE RESTRICT
+  version_id  UUID FK        → workflow_definition_versions; indexed; ON DELETE RESTRICT
+  status      VARCHAR(20)    Workflow Run Status, CHECK constraint (as §11)
+  inputs      JSONB          {key: value} of supplied Required Inputs; DEFAULT '{}'
+  created_at  TIMESTAMPTZ    DEFAULT now()
+```
+
+```text
+created by Triage ─┬─ has Required Inputs ─▶ AWAITING_INPUTS ──all supplied──▶ READY
+                   └─ has none ─────────────────────────────────────────────▶ READY
+READY ──▶ RUNNING ──▶ COMPLETED | FAILED                     (execution: a later milestone)
+CANCELLED: from AWAITING_INPUTS, READY or RUNNING, only by cancelling the Ticket
+```
+
+```text
+GET  /api/workflow-runs/{run_id}             one Run; 404 if missing
+GET  /api/tickets/{ticket_id}/workflow-run   a Ticket's Run; 404 if the Ticket or its Run is missing
+POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 / 422
+```
+
+- **Decision:** this milestone builds the Run as a record: the table, a `create_workflow_run` service function for Triage, the read routes and input submission. Carrying out Steps is a later milestone. There is no public `POST /workflow-runs`, because only Triage creates Runs.
+- **Why:**
+  - Triage needs somewhere to write its result before it can be built, and §16's input collection needs a Run to collect into.
+  - Who carries out the Steps (an LLM, a person, both) is still open. Deciding it now would be guessing.
+- **Alternatives:** design execution now too (the status set would be final, but the milestone grows and rests on guesses); wait for the Conversation milestone to add input submission (smaller, but nothing could reach READY, so the lifecycle would go untested).
+- **Tradeoffs:** RUNNING, COMPLETED and FAILED exist before anything can reach them.
+- **Soundbite:** "A Workflow Run pins the exact Definition Version Triage selected, one per Ticket. I built the record and its input collection first, and left execution until I know who carries out the Steps."
+
+### Relationships: version only, one Run per Ticket
+
+- **Decision:** the Run references `version_id`, not `definition_id`; the definition is one join away. `UNIQUE (ticket_id)` allows one Run per Ticket, ever. Both foreign keys are `ON DELETE RESTRICT`. Deleting a Ticket that has a Run returns 409: `remove_ticket` catches the foreign key's `IntegrityError` and raises `ValueError`, as the duplicate-name check does (§15). The User cancels such a Ticket instead.
+- **Why:**
+  - A stored `definition_id` would be a second copy of the version's parent, free to disagree with it.
+  - TRIAGED is the end of the Ticket lifecycle (§11), and nothing re-triages a Ticket, so a second Run can't happen. The database enforces it instead of the code assuming it.
+  - Letting the constraint decide is race-free. A check-then-delete would miss a Run that Triage commits in between, and that delete would then fail with a 500.
+  - Nothing a Run references is deleted, the same rule that makes Workflow Definitions Disabled rather than deleted.
+- **Alternatives:** also store `definition_id` (no join for "Runs of definition X", but it can drift); a partial unique index over active Runs only (allows re-runs later, but needs "active" defined and nothing needs re-runs); `ON DELETE CASCADE` (simple, but work in progress disappears without a trace); checking for a Run before deleting (plainer code, but the race above).
+- **Tradeoffs:** "Runs of definition X" needs a join. A triaged Ticket can never be deleted. Re-triage would mean replacing `UNIQUE` with a partial index, which is an easy migration. The `IntegrityError` catch must match only this constraint, so another integrity failure doesn't become a misleading 409.
+
+### No Match Confidence on the Run
+
+- **Decision:** the Run doesn't store the Match Confidence that selected it.
+- **Why:** a Run is selected under one rule, Match Confidence `>=` the version's Confidence Threshold, and the threshold is already kept on the version. What the Run needs to do its work is the version and the inputs. Why Triage chose it is Triage's concern.
+- **Alternatives:** a `match_confidence NUMERIC(3,2)` column (keeps the exact score, for debugging Triage).
+- **Tradeoffs:** when several definitions qualify, the highest Match Confidence wins (§12), and nothing records the score or the runners-up. If tuning Triage ever needs that, it belongs in a Triage record, not on the Run.
+
+### Workflow Run Status: the full set up front
+
+- **Decision:** six statuses (see `GLOSSARY.md`), stored like Ticket Status (§11): `VARCHAR(20)` with a `CHECK` constraint, set only by the system. A Run whose version has no Required Inputs starts at READY.
+- **Why:** the same as §11. Each status is a place a Run can wait or get stuck. Defining the execution statuses now saves a hand-written `CHECK` migration next milestone, since autogenerate doesn't detect `CHECK` changes.
+- **Alternatives:** only the statuses reachable today (AWAITING_INPUTS, READY, CANCELLED): the constraint covers only reachable values, but the next milestone must migrate it.
+- **Tradeoffs:** three values nothing can reach yet. Only `created_at` is stored; `started_at` and `completed_at` wait until execution writes and something reads them.
+
+### Creating a Run: one transaction with TRIAGED
+
+- **Decision:** `workflow_run_service.create_workflow_run(session, ticket_id, version_id)` runs in the caller's transaction (§5):
+  1. Compare-and-set the Ticket from TRIAGING to TRIAGED. If no row matches (the Ticket was cancelled, say), raise `ValueError` and insert nothing.
+  2. Load the version and read its definition's `is_enabled` with a plain `SELECT`. If it's Disabled, raise `ValueError`; the transaction rolls back, and the Ticket stays TRIAGING for Triage to try again.
+  3. Insert the Run with status READY or AWAITING_INPUTS.
+
+  Until Triage exists, tests call the service directly in the rollback session, after moving the Ticket to TRIAGING with `modify_ticket_status`.
+- **Why:**
+  - Both writes or neither: a TRIAGED Ticket without a Run, or a Run for a cancelled Ticket, can't exist (§11, *What workers must do*).
+  - `is_enabled` needs no lock. If a disable commits before the read, the read sees it. If it commits after, the outcome is the same as disabling just after the Run was created, which is allowed, because Disabled only stops new selections.
+  - Ticket first, then Run, is the same order cancelling uses, so the two can't deadlock.
+- **Alternatives:** `SELECT ... FOR SHARE` on the definition (a disable waits for the Run's commit, but it prevents no anomaly and only makes Admins wait); a test-only HTTP route that creates Runs (tests stay on `TestClient`, but the app ships an endpoint only tests need).
+- **Tradeoffs:** `create_workflow_run` is tested without its real caller until Triage lands.
+
+### Cancelling through the Ticket
+
+- **Decision:** `TRIAGED` joins the Ticket's cancellable statuses. `cancel_ticket` runs two compare-and-sets in one transaction: the Ticket to CANCELLED, then its Run from AWAITING_INPUTS, READY or RUNNING to CANCELLED. If the Run is COMPLETED or FAILED, the whole cancel returns 409 and the Ticket stays TRIAGED. There is no Run cancel endpoint.
+- **Why:** finished work can't be withdrawn, and a CANCELLED Ticket pointing at COMPLETED work would contradict itself. One command means one place for the rules.
+- **Alternatives:** always cancel the Ticket and leave a finished Run alone (cancel never fails, but the two disagree); also `POST /workflow-runs/{id}/cancel` (two entry points to keep in step, and should the Ticket follow?).
+- **Tradeoffs:** RUNNING is cancellable before anything runs, so the execution milestone must check the Run's status at each Step.
+
+### Submitting Required Inputs: a JSONB merge in a compare-and-set
+
+- **Decision:**
+  - The body is `{"inputs": {key: value}}`. Submissions can be partial, and a key can be overwritten while the Run is AWAITING_INPUTS. Once it's READY, every submission returns 409.
+  - The service loads the version and validates the values with a Pydantic model built at runtime from its `required_inputs` (`create_model`, `strict=True`, `extra="forbid"`). An empty object, an unknown key, `null` or a wrong type returns 422. There is no coercion: `"1500"` is not a number.
+  - Then one statement: `UPDATE workflow_runs SET inputs = inputs || :new WHERE run_id = :id AND status = 'AWAITING_INPUTS' RETURNING ...`. If the merged inputs cover every key, a second compare-and-set in the same transaction moves the Run to READY.
+- **Why:**
+  - Two concurrent half-submissions can't lose each other's values. Under `READ COMMITTED`, the second `UPDATE` waits for the first to commit, then re-evaluates `inputs || :new` against the committed row. The row stays locked until commit, so the completeness check sees every value.
+  - Overwriting lets the User correct a value ("actually, $1500"). Freezing at READY means execution never sees values change under it.
+  - A runtime model gives FastAPI's usual 422 format, and `strict=True` handles the bool trap: `isinstance(True, int)` is `True` in Python, but strict mode rejects `true` for a number.
+- **Errors:** `ValueError` still means 409 (§11). `pydantic.ValidationError` is a subclass of `ValueError`, so the router must catch `ValidationError` → 422 **before** `ValueError` → 409, with a comment saying why.
+- **Alternatives:** `SELECT ... FOR UPDATE`, merge in Python, write back (plain ORM, but breaks "every transition is a compare-and-set"); write-once keys (guard against agent mistakes, but the User can't fix a wrong value); a `workflow_run_inputs` child table (easy per-value updates and provenance, but one more table, as §15 argued); coercing types (friendlier, but the service guesses on the LLM's behalf); hand-written checks raising a custom `InvalidInputsError` (no `except` ordering to remember, but one more class and a home-made error format); a `ConflictError` replacing `ValueError` for 409 everywhere (names the meaning and removes the ordering trap, but changes four existing call sites for one new case).
+- **Implementation notes:**
+  - Validate in JSON mode (`model_validate_json`). Strict Python-mode validation rejects `"2026-11-07"` for a `date`; JSON mode accepts it.
+  - Type each field `T` with a default of `None`, not `T | None`, so an explicit `null` is rejected (the `UpdateTicketRequest` trick, see *Known gaps*). A `string` field needs `min_length=1`.
+  - A `number` comes back as a float (`3` → `3.0`); store `model_dump(mode="json", exclude_unset=True)`.
+- **Tradeoffs:** the ordering of `except` clauses is a silent dependency. The database can't check the values; every write must go through the service.
+
+### Responses: values computed at read time
+
+- **Decision:** `WorkflowRunItem` returns the stored columns plus `definition_id` and `version_number` (from a join) and `missing_inputs` (the version's keys not yet in `inputs`). None of them is stored.
+- **Why:** the only route that reads a version takes a definition ID and a version number, so a client holding only `version_id` couldn't reach it. The Intake Agent needs `missing_inputs` on every turn (§16), and computing it from immutable data can't drift.
+- **Alternatives:** stored columns only, plus a `GET /workflow-definition-versions/{version_id}` route (a pure response, but a second way to read a version, and every client works out what's missing); `GET /workflow-runs?ticket_id=` instead of the nested route (a filter that returns a list of at most one).
+- **Where it's built:** `get_missing_inputs(run, version)` lives in `workflow_run_service.py`, in the version's key order, because input submission needs the same check. The read services return `(run, version)`, and the router's `_to_item` builds the item, as the Workflow Definition router does. `GET /tickets/{ticket_id}/workflow-run` lives in `ticket_router`, which owns the URL, and calls the Workflow Run service. A missing Ticket and a Ticket without a Run give the same 404.
+- **Tradeoffs:** every read loads the version for the join and for `missing_inputs`. The router calls a second service function to build the item.
+
 ---
 
 ## Known gaps
 
 - There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
-- A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §11).
+- A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §17).
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation, Workflow Run or Triage. Workflow Definition is designed (§15) but not built.
+- Nothing exists yet for Conversation or Triage. Workflow Runs can be created and read, but not yet given Required Inputs or cancelled (§17).
+- `DELETE /tickets/{id}` deletes unconditionally. Once Workflow Runs exist, deleting a Ticket that has a Run must return 409 (§17).
 - A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.

@@ -6,7 +6,7 @@
 
 AI Triage Platform maps a user's natural-language requests to predefined workflows.
 
-A **User** talks to the **Intake Agent** in a **Conversation**. The Intake Agent extracts each distinct request as a **Ticket**, which is queued for **Triage**. When Triage's **Match Confidence** for a **Workflow Definition** meets that definition's **Confidence Threshold**, it creates a **Workflow Run** of that definition, and the Ticket becomes `TRIAGED`.
+A **User** talks to the **Intake Agent** in a **Conversation**. The Intake Agent extracts each distinct request as a **Ticket**, which is queued for **Triage**. When Triage's **Match Confidence** for a **Workflow Definition** meets that definition's **Confidence Threshold**, it creates a **Workflow Run** pinned to that definition's current **Workflow Definition Version**, and the Ticket becomes `TRIAGED`.
 
 Use the vocabulary in [GLOSSARY.md](../GLOSSARY.md) in code, docs, commits and conversation. Design rationale lives in [DESIGN.md](../DESIGN.md); hard-to-reverse decisions live in [docs/adr/](../docs/adr/).
 
@@ -46,6 +46,7 @@ tests/
   conftest.py             Forces the local DATABASE_URL; migration and client fixtures
   test_tickets_api.py     Ticket API tests through TestClient
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
+  test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433
@@ -92,9 +93,9 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14).
-- **In progress:** Workflow Definition. Design done (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)); implementation in three PRs: tables with create and read (merged), new versions (merged), disable and enable (in progress).
-- **Next:** Conversation, Workflow Run (including Required Input collection, `DESIGN.md` §16) and Triage.
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)).
+- **In progress:** Workflow Run. Design done (`DESIGN.md` §17); implementation in three PRs: table, `create_workflow_run` for Triage and read routes (in review); Required Input submission; cancelling a TRIAGED Ticket together with its Run, and the 409 for deleting a Ticket that has one. Executing Steps is a later milestone.
+- **Next:** Conversation (including the Intake Agent turn that collects Required Inputs, `DESIGN.md` §16) and Triage.
 
 Update this section when a milestone starts or lands.
 
