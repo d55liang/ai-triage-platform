@@ -395,7 +395,7 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
 
 ## 17. Workflow Runs: one per Ticket, pinned to a version
 
-Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission; cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
+Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission (built); cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
 
 ```text
 workflow_runs
@@ -479,17 +479,18 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 - **Decision:**
   - The body is `{"inputs": {key: value}}`. Submissions can be partial, and a key can be overwritten while the Run is AWAITING_INPUTS. Once it's READY, every submission returns 409.
-  - The service loads the version and validates the values with a Pydantic model built at runtime from its `required_inputs` (`create_model`, `strict=True`, `extra="forbid"`). An empty object, an unknown key, `null` or a wrong type returns 422. There is no coercion: `"1500"` is not a number.
+  - The service loads the version and validates the values with a Pydantic `TypeAdapter` over a `TypedDict` built at runtime from its `required_inputs` (`total=False`, `strict=True`, `extra="forbid"`). An unknown key, `null` or a wrong type returns 422, and so does an empty object, which the request model rejects. There is no coercion: `"1500"` is not a number.
   - Then one statement: `UPDATE workflow_runs SET inputs = inputs || :new WHERE run_id = :id AND status = 'AWAITING_INPUTS' RETURNING ...`. If the merged inputs cover every key, a second compare-and-set in the same transaction moves the Run to READY.
 - **Why:**
   - Two concurrent half-submissions can't lose each other's values. Under `READ COMMITTED`, the second `UPDATE` waits for the first to commit, then re-evaluates `inputs || :new` against the committed row. The row stays locked until commit, so the completeness check sees every value.
   - Overwriting lets the User correct a value ("actually, $1500"). Freezing at READY means execution never sees values change under it.
-  - A runtime model gives FastAPI's usual 422 format, and `strict=True` handles the bool trap: `isinstance(True, int)` is `True` in Python, but strict mode rejects `true` for a number.
+  - A runtime validator gives a `ValidationError` and FastAPI's usual 422 format, and `strict=True` handles the bool trap: `isinstance(True, int)` is `True` in Python, but strict mode rejects `true` for a number.
+  - A `TypedDict`, not `create_model`: a model's fields share a namespace with `BaseModel`, and keys the key pattern allows clash with it (`model_dump` fails to build, `model_config` is read as configuration, `json` shadows a method). A `TypedDict` has no such names, and since its values aren't `| None`, `null` is rejected without extra work.
 - **Errors:** `ValueError` still means 409 (§11). `pydantic.ValidationError` is a subclass of `ValueError`, so the router must catch `ValidationError` → 422 **before** `ValueError` → 409, with a comment saying why.
 - **Alternatives:** `SELECT ... FOR UPDATE`, merge in Python, write back (plain ORM, but breaks "every transition is a compare-and-set"); write-once keys (guard against agent mistakes, but the User can't fix a wrong value); a `workflow_run_inputs` child table (easy per-value updates and provenance, but one more table, as §15 argued); coercing types (friendlier, but the service guesses on the LLM's behalf); hand-written checks raising a custom `InvalidInputsError` (no `except` ordering to remember, but one more class and a home-made error format); a `ConflictError` replacing `ValueError` for 409 everywhere (names the meaning and removes the ordering trap, but changes four existing call sites for one new case).
 - **Implementation notes:**
   - Validate in JSON mode (`model_validate_json`). Strict Python-mode validation rejects `"2026-11-07"` for a `date`; JSON mode accepts it.
-  - Type each field `T` with a default of `None`, not `T | None`, so an explicit `null` is rejected (the `UpdateTicketRequest` trick, see *Known gaps*). A `string` field needs `min_length=1`.
+  - A `string` field needs `min_length=1`.
   - A `number` comes back as a float (`3` → `3.0`); store `model_dump(mode="json", exclude_unset=True)`.
 - **Tradeoffs:** the ordering of `except` clauses is a silent dependency. The database can't check the values; every write must go through the service.
 
@@ -508,8 +509,9 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
 - A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §17).
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
+- Concurrent Required Input submissions have no automated test either, for the same reason. Checked by hand: the second `UPDATE` waited for the first to commit, and the Run kept both values (§17).
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation or Triage. Workflow Runs can be created and read, but not yet given Required Inputs or cancelled (§17).
+- Nothing exists yet for Conversation or Triage. Workflow Runs can be created, read and given Required Inputs, but not yet cancelled (§17).
 - `DELETE /tickets/{id}` deletes unconditionally. Once Workflow Runs exist, deleting a Ticket that has a Run must return 409 (§17).
 - A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.
