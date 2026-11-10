@@ -12,13 +12,14 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
     true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-from app.models.enums import TicketStatus
+from app.models.enums import TicketStatus, WorkflowRunStatus
 
 
 class Ticket(Base):
@@ -80,4 +81,33 @@ class WorkflowDefinitionVersion(Base):
     steps: Mapped[list[dict[str, str]]] = mapped_column(JSONB)
     required_inputs: Mapped[list[dict[str, str]]] = mapped_column(JSONB)
     sample_requests: Mapped[list[str]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkflowRun(Base):
+    """One per Ticket, pinned to the Workflow Definition Version Triage selected."""
+
+    __tablename__ = "workflow_runs"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # The unique constraint's index also serves the foreign key.
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tickets.ticket_id", ondelete="RESTRICT"), unique=True
+    )
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workflow_definition_versions.version_id", ondelete="RESTRICT"), index=True
+    )
+    status: Mapped[WorkflowRunStatus] = mapped_column(
+        Enum(
+            WorkflowRunStatus,
+            name="workflow_run_status",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+        )
+    )
+    # Required Input values by key; validated against the version by the service.
+    inputs: Mapped[dict[str, str | float | bool]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
