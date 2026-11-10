@@ -22,6 +22,7 @@ Rationale is in `DESIGN.md` §10.
 - Use `httpx2`, not `httpx`, for `TestClient`. Starlette deprecates `httpx` there.
 - Each test uses a session on an open transaction, supplied through `app.dependency_overrides[get_session]` and rolled back afterwards. Don't write teardown for rolled-back data.
 - The override wraps each request in `session.begin_nested()`. Without that savepoint nothing flushes, so a deleted Ticket can still be read back and `test_delete_ticket` fails.
+- When a request raises, the override calls `session.expire_all()` before re-raising. Rolling back the savepoint undoes the database writes, but an object refreshed by `UPDATE ... RETURNING` keeps its new values in the session's cache, so the next request would read them back.
 - Don't assert order by `created_at` inside a rolled-back test. `now()` is the transaction's start time, so every row in the test gets the same value.
 - Name files `test_<resource>_api.py` and tests `test_<behaviour>`. Pytest silently skips a function without the `test_` prefix. Assert on status codes and response bodies.
 - A test that commits for real skips the override and cleans up after itself. Keep these rare.

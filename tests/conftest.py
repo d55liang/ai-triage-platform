@@ -42,8 +42,14 @@ def client(session: Session) -> Iterator[TestClient]:
     def override_get_session() -> Iterator[Session]:
         # A savepoint stands in for the real commit: it flushes on success and
         # rolls back only this request on failure.
-        with session.begin_nested():
-            yield session
+        try:
+            with session.begin_nested():
+                yield session
+        except Exception:
+            # A rolled-back savepoint can leave objects that UPDATE ... RETURNING refreshed in the
+            # identity map; a real request would start with a fresh session and never see them.
+            session.expire_all()
+            raise
 
     app.dependency_overrides[get_session] = override_get_session
     yield TestClient(app)
