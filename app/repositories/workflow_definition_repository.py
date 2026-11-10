@@ -99,6 +99,23 @@ def fetch_workflow_definition_version(
     return version
 
 
+def fetch_workflow_definition_version_by_id(
+    session: Session, version_id: UUID
+) -> DefinitionWithVersion:
+    statement = (
+        select(WorkflowDefinition, WorkflowDefinitionVersion)
+        .join(
+            WorkflowDefinitionVersion,
+            WorkflowDefinitionVersion.definition_id == WorkflowDefinition.definition_id,
+        )
+        .where(WorkflowDefinitionVersion.version_id == version_id)
+    )
+    row = session.execute(statement).one_or_none()
+    if row is None:
+        raise KeyError(version_id)
+    return row
+
+
 def modify_workflow_definition(
     session: Session, definition_id: UUID, params: dict
 ) -> WorkflowDefinition:
