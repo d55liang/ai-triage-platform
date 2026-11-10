@@ -463,3 +463,85 @@ def test_submit_with_malformed_run_id_returns_422(client: TestClient) -> None:
     response = client.post("/api/workflow-runs/not-a-uuid/inputs", json={"inputs": {}})
 
     assert response.status_code == 422
+
+
+# Cancelling a Ticket with a Run.
+
+
+def cancel_ticket(client: TestClient, ticket_id: UUID) -> Response:
+    return client.post(f"/api/tickets/{ticket_id}/cancel")
+
+
+@pytest.mark.parametrize(
+    "run_status",
+    [WorkflowRunStatus.AWAITING_INPUTS, WorkflowRunStatus.READY, WorkflowRunStatus.RUNNING],
+)
+def test_cancel_triaged_ticket_cancels_its_run(
+    client: TestClient, session: Session, run_status: WorkflowRunStatus
+) -> None:
+    run, _ = create_run_for_new_ticket(client, session)
+    set_run_status(session, run.run_id, run_status)
+
+    response = cancel_ticket(client, run.ticket_id)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == TicketStatus.CANCELLED
+    assert get_ticket_status(client, run.ticket_id) == TicketStatus.CANCELLED
+    assert get_run(client, run.run_id)["status"] == WorkflowRunStatus.CANCELLED
+
+
+@pytest.mark.parametrize("run_status", [WorkflowRunStatus.COMPLETED, WorkflowRunStatus.FAILED])
+def test_cancel_ticket_with_finished_run_returns_409(
+    client: TestClient, session: Session, run_status: WorkflowRunStatus
+) -> None:
+    run, _ = create_run_for_new_ticket(client, session)
+    set_run_status(session, run.run_id, run_status)
+
+    response = cancel_ticket(client, run.ticket_id)
+
+    assert response.status_code == 409
+    # Both writes are undone, so neither the Ticket nor its Run changes.
+    assert get_ticket_status(client, run.ticket_id) == TicketStatus.TRIAGED
+    assert get_run(client, run.run_id)["status"] == run_status
+
+
+def test_cancel_triaged_ticket_twice_succeeds(client: TestClient, session: Session) -> None:
+    run, _ = create_run_for_new_ticket(client, session)
+
+    response_first = cancel_ticket(client, run.ticket_id)
+    response_second = cancel_ticket(client, run.ticket_id)
+
+    assert response_first.status_code == 200
+    assert response_second.status_code == 200
+    assert response_second.json() == response_first.json()
+    assert get_run(client, run.run_id)["status"] == WorkflowRunStatus.CANCELLED
+
+
+def test_cancelled_run_rejects_inputs(client: TestClient, session: Session) -> None:
+    run, _ = create_run_for_new_ticket(client, session)
+    cancel_ticket(client, run.ticket_id)
+
+    response = submit_inputs(client, run.run_id, {"budget": 1500})
+
+    assert response.status_code == 409
+    assert get_run(client, run.run_id)["inputs"] == {}
+
+
+# Deleting a Ticket with a Run.
+
+
+@pytest.mark.parametrize(
+    "run_status", [WorkflowRunStatus.AWAITING_INPUTS, WorkflowRunStatus.CANCELLED]
+)
+def test_delete_ticket_with_run_returns_409(
+    client: TestClient, session: Session, run_status: WorkflowRunStatus
+) -> None:
+    # Even a cancelled Run keeps its Ticket: nothing a Run references is deleted.
+    run, _ = create_run_for_new_ticket(client, session)
+    set_run_status(session, run.run_id, run_status)
+
+    response = client.delete(f"/api/tickets/{run.ticket_id}")
+
+    assert response.status_code == 409
+    assert get_ticket_status(client, run.ticket_id) == TicketStatus.TRIAGED
+    assert get_run(client, run.run_id)["status"] == run_status
