@@ -46,6 +46,7 @@ tests/
   conftest.py             Forces the local DATABASE_URL; migration and client fixtures
   test_tickets_api.py     Ticket API tests through TestClient
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
+  test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433

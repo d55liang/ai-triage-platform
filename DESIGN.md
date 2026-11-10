@@ -400,8 +400,8 @@ Status: **designed**, not built. Builds on [ADR 0002](docs/adr/0002-immutable-wo
 ```text
 workflow_runs
   run_id      UUID PK        generated in the service (§7)
-  ticket_id   UUID FK        UNIQUE: one Run per Ticket, ever; ON DELETE RESTRICT
-  version_id  UUID FK        → workflow_definition_versions; ON DELETE RESTRICT
+  ticket_id   UUID FK        UNIQUE: one Run per Ticket, ever, and its index serves the FK; ON DELETE RESTRICT
+  version_id  UUID FK        → workflow_definition_versions; indexed; ON DELETE RESTRICT
   status      VARCHAR(20)    Workflow Run Status, CHECK constraint (as §11)
   inputs      JSONB          {key: value} of supplied Required Inputs; DEFAULT '{}'
   created_at  TIMESTAMPTZ    DEFAULT now()
@@ -498,7 +498,8 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - **Decision:** `WorkflowRunItem` returns the stored columns plus `definition_id` and `version_number` (from a join) and `missing_inputs` (the version's keys not yet in `inputs`). None of them is stored.
 - **Why:** the only route that reads a version takes a definition ID and a version number, so a client holding only `version_id` couldn't reach it. The Intake Agent needs `missing_inputs` on every turn (§16), and computing it from immutable data can't drift.
 - **Alternatives:** stored columns only, plus a `GET /workflow-definition-versions/{version_id}` route (a pure response, but a second way to read a version, and every client works out what's missing); `GET /workflow-runs?ticket_id=` instead of the nested route (a filter that returns a list of at most one).
-- **Tradeoffs:** every read loads the version for the join and for `missing_inputs`.
+- **Where it's built:** `get_missing_inputs(run, version)` lives in `workflow_run_service.py`, in the version's key order, because input submission needs the same check. The read services return `(run, version)`, and the router's `_to_item` builds the item, as the Workflow Definition router does. `GET /tickets/{ticket_id}/workflow-run` lives in `ticket_router`, which owns the URL, and calls the Workflow Run service. A missing Ticket and a Ticket without a Run give the same 404.
+- **Tradeoffs:** every read loads the version for the join and for `missing_inputs`. The router calls a second service function to build the item.
 
 ---
 
