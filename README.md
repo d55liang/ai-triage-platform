@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read and given Required Inputs, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
 
 ## Tech stack
 
@@ -92,8 +92,8 @@ DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic
 | `GET` | `/api/tickets` | List all Tickets |
 | `GET` | `/api/tickets/{ticket_id}` | Get one Ticket |
 | `PATCH` | `/api/tickets/{ticket_id}` | Update `message` (status is system-managed) |
-| `DELETE` | `/api/tickets/{ticket_id}` | Delete a Ticket |
-| `POST` | `/api/tickets/{ticket_id}/cancel` | Cancel a Ticket; repeating it succeeds, and a `TRIAGED` or `FAILED` Ticket returns 409 |
+| `DELETE` | `/api/tickets/{ticket_id}` | Delete a Ticket; one that has a Workflow Run returns 409 (cancel it instead) |
+| `POST` | `/api/tickets/{ticket_id}/cancel` | Cancel a Ticket; a `TRIAGED` Ticket's Workflow Run is cancelled too. Repeating it succeeds; a `FAILED` Ticket, or one whose Run is `COMPLETED` or `FAILED`, returns 409 |
 | `POST` | `/api/workflow-definitions` | Create a Workflow Definition and its version 1 (`name`, `description`, `confidence_threshold`, `steps`, `required_inputs`, `sample_requests`); a taken name returns 409 |
 | `GET` | `/api/workflow-definitions?limit=50&offset=0` | List Workflow Definitions, each with its current version |
 | `GET` | `/api/workflow-definitions/{definition_id}` | Get one Workflow Definition with its current version |

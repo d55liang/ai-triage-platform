@@ -175,8 +175,8 @@ CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ─�
    └ re-publish        └──── timeout / retry ─────┤
      (stuck in                                    └──retries used up──▶ FAILED
       CREATED)
-CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING and UNMATCHED
-           (TRIAGED is added with Workflow Runs, which cancelling also cancels; see §17)
+CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING, UNMATCHED and TRIAGED
+           (from TRIAGED, its Workflow Run is cancelled too, unless it has finished; see §17)
 ```
 
 - **Decision:** seven Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
@@ -195,10 +195,10 @@ CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING and UNMATCHED
 
 ### Cancelling: a compare-and-set in one request
 
-- **Decision:** `POST /tickets/{id}/cancel` calls `modify_ticket_status`, a compare-and-set: `UPDATE ... WHERE ticket_id = :id AND status IN (...) RETURNING ...`. The service owns the allowed statuses. A missing Ticket returns 404. A `TRIAGED` or `FAILED` Ticket returns 409 through a built-in `ValueError`. Cancelling a `CANCELLED` Ticket returns 200, because `CANCELLED` is one of the allowed statuses.
+- **Decision:** `POST /tickets/{id}/cancel` calls `modify_ticket_status`, a compare-and-set: `UPDATE ... WHERE ticket_id = :id AND status IN (...) RETURNING ...`. The service owns the allowed statuses. A missing Ticket returns 404. A `FAILED` Ticket, or a `TRIAGED` one whose Workflow Run is COMPLETED or FAILED, returns 409 through a built-in `ValueError`. Cancelling a `CANCELLED` Ticket returns 200, because `CANCELLED` is one of the allowed statuses.
 - **Why:**
   - A read followed by a write has a race: a worker could commit `TRIAGED` in between and the cancel would overwrite it. Here the database checks the status and writes it in one statement. Under `READ COMMITTED`, a cancel that meets an uncommitted worker update waits, re-checks the committed status, then matches no row.
-  - `TRIAGED` stays out for now. Without Workflow Runs, a status-only cancel couldn't cancel the Run, and would leave that gap once Runs exist. It joins the allowed statuses in the same change that adds Run cancellation.
+  - `TRIAGED` was left out until Workflow Runs existed, because a status-only cancel couldn't cancel the Run. It joined the allowed statuses in the change that cancels the Run too (§17).
   - A retry after a lost response should succeed, because the caller's goal is already met.
   - `status` stays out of `ALLOWED_COLUMNS`, so `PATCH` still can't change it.
   - Cancelling is `POST` because it's a domain command with its own transition rules, not a client-supplied change. It needs no body, and the server decides whether it's allowed.
@@ -395,7 +395,7 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
 
 ## 17. Workflow Runs: one per Ticket, pinned to a version
 
-Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission (built); cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
+Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission (built); cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one (built). Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
 
 ```text
 workflow_runs
@@ -430,7 +430,7 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ### Relationships: version only, one Run per Ticket
 
-- **Decision:** the Run references `version_id`, not `definition_id`; the definition is one join away. `UNIQUE (ticket_id)` allows one Run per Ticket, ever. Both foreign keys are `ON DELETE RESTRICT`. Deleting a Ticket that has a Run returns 409: `remove_ticket` catches the foreign key's `IntegrityError` and raises `ValueError`, as the duplicate-name check does (§15). The User cancels such a Ticket instead.
+- **Decision:** the Run references `version_id`, not `definition_id`; the definition is one join away. `UNIQUE (ticket_id)` allows one Run per Ticket, ever. Both foreign keys are `ON DELETE RESTRICT`. Deleting a Ticket that has a Run returns 409: `remove_ticket` flushes the delete, catches the `IntegrityError` only when its constraint is `fk_workflow_runs_ticket_id_tickets`, and raises `ValueError`, as the duplicate-name check does (§15). Without the flush, the violation would surface at commit, after the handler returned, as a 500. The User cancels such a Ticket instead.
 - **Why:**
   - A stored `definition_id` would be a second copy of the version's parent, free to disagree with it.
   - TRIAGED is the end of the Ticket lifecycle (§11), and nothing re-triages a Ticket, so a second Run can't happen. The database enforces it instead of the code assuming it.
@@ -470,10 +470,20 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ### Cancelling through the Ticket
 
-- **Decision:** `TRIAGED` joins the Ticket's cancellable statuses. `cancel_ticket` runs two compare-and-sets in one transaction: the Ticket to CANCELLED, then its Run from AWAITING_INPUTS, READY or RUNNING to CANCELLED. If the Run is COMPLETED or FAILED, the whole cancel returns 409 and the Ticket stays TRIAGED. There is no Run cancel endpoint.
-- **Why:** finished work can't be withdrawn, and a CANCELLED Ticket pointing at COMPLETED work would contradict itself. One command means one place for the rules.
-- **Alternatives:** always cancel the Ticket and leave a finished Run alone (cancel never fails, but the two disagree); also `POST /workflow-runs/{id}/cancel` (two entry points to keep in step, and should the Ticket follow?).
-- **Tradeoffs:** RUNNING is cancellable before anything runs, so the execution milestone must check the Run's status at each Step.
+- **Decision:** `TRIAGED` joins the Ticket's cancellable statuses. `cancel_ticket` runs in one transaction:
+  1. Compare-and-set the Ticket to CANCELLED.
+  2. Look up its Run by `ticket_id`. If there is none, the cancel is done.
+  3. Compare-and-set the Run to CANCELLED from AWAITING_INPUTS, READY, RUNNING or CANCELLED. If the Run is COMPLETED or FAILED, this raises, the whole transaction rolls back, the Ticket stays TRIAGED, and the response is 409.
+
+  There is no Run cancel endpoint.
+- **Why:**
+  - Finished work can't be withdrawn, and a CANCELLED Ticket pointing at COMPLETED work would contradict itself. One command means one place for the rules.
+  - The Ticket's compare-and-set returns the row after the update, so it can't say whether the Ticket *was* TRIAGED. Looking the Run up afterwards answers that without a read-then-write race.
+  - The lookup can't miss a Run that Triage is creating. Step 1 holds the Ticket's row lock, and Triage must lock the Ticket before it inserts a Run. If Triage commits first, the cancel waits, sees TRIAGED and finds the Run; if the cancel commits first, Triage matches no row and creates nothing.
+  - Locks are always taken Ticket first, then Run, by Triage and by cancel alike, so the two can't deadlock. Input submission locks only the Run.
+  - CANCELLED is a cancellable Run status for the same reason it is for Tickets: a retried cancel must succeed (§11).
+- **Alternatives:** always cancel the Ticket and leave a finished Run alone (cancel never fails, but the two disagree); also `POST /workflow-runs/{id}/cancel` (two entry points to keep in step, and should the Ticket follow?); reading the Ticket's status before updating it (says directly whether a Run exists, but it's the check-then-update race again).
+- **Tradeoffs:** every cancel pays for one Run lookup, even for a Ticket that was never triaged. RUNNING is cancellable before anything runs, so the execution milestone must check the Run's status at each Step.
 
 ### Submitting Required Inputs: a JSONB merge in a compare-and-set
 
@@ -507,11 +517,10 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 ## Known gaps
 
 - There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
-- A `TRIAGED` Ticket can't be cancelled yet, although `GLOSSARY.md` describes that behaviour. It arrives with Workflow Runs (see §17).
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
 - Concurrent Required Input submissions have no automated test either, for the same reason. Checked by hand: the second `UPDATE` waited for the first to commit, and the Run kept both values (§17).
+- The test session is shared by every request in a test, so a request that fails after writing could leave a stale object in its cache: the savepoint rolls back the database, but an object refreshed by `UPDATE ... RETURNING` isn't expired with it. The override in `tests/conftest.py` expires the session after a failed request, as a fresh production session would never see the stale object. Found when a cancel that returned 409 still read back as CANCELLED.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation or Triage. Workflow Runs can be created, read and given Required Inputs, but not yet cancelled (§17).
-- `DELETE /tickets/{id}` deletes unconditionally. Once Workflow Runs exist, deleting a Ticket that has a Run must return 409 (§17).
+- Nothing exists yet for Conversation or Triage. Workflow Runs can be created, read, given Required Inputs and cancelled through their Ticket (§17).
 - A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.
