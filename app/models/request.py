@@ -99,3 +99,11 @@ class UpdateWorkflowDefinitionRequest(BaseModel):
     name: Annotated[
         str, Field(min_length=1, max_length=100, description="Unique name of the definition")
     ] = None
+
+
+class SubmitWorkflowRunInputsRequest(BaseModel):
+    # Values are checked by the service, against the Required Inputs of the Run's version.
+    inputs: Annotated[
+        dict[str, object],
+        Field(min_length=1, description="Required Input values by key; may be a partial set"),
+    ]
