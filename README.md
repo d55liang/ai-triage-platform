@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs are designed (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
 
 ## Tech stack
 

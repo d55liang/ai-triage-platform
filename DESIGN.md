@@ -395,7 +395,7 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
 
 ## 17. Workflow Runs: one per Ticket, pinned to a version
 
-Status: **designed**, not built. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
+Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission; cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
 
 ```text
 workflow_runs
@@ -510,6 +510,6 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation, Workflow Run or Triage. Workflow Run is designed (§17) but not built.
+- Nothing exists yet for Conversation or Triage. Workflow Runs can be created and read, but not yet given Required Inputs or cancelled (§17).
 - `DELETE /tickets/{id}` deletes unconditionally. Once Workflow Runs exist, deleting a Ticket that has a Run must return 409 (§17).
 - A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.
