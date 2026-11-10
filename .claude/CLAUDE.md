@@ -94,7 +94,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)).
-- **In progress:** Workflow Run. Design done (`DESIGN.md` §17); implementation in three PRs: table, `create_workflow_run` for Triage and read routes (merged); Required Input submission (in review); cancelling a TRIAGED Ticket together with its Run, and the 409 for deleting a Ticket that has one. Executing Steps is a later milestone.
+- **In progress:** Workflow Run. Design done (`DESIGN.md` §17); implementation in three PRs: table, `create_workflow_run` for Triage and read routes (merged); Required Input submission (merged); cancelling a TRIAGED Ticket together with its Run, and the 409 for deleting a Ticket that has one (in review). Executing Steps is a later milestone.
 - **Next:** Conversation (including the Intake Agent turn that collects Required Inputs, `DESIGN.md` §16) and Triage.
 
 Update this section when a milestone starts or lands.

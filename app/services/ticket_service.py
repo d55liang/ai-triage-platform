@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import TicketStatus
+from app.models.enums import TicketStatus, WorkflowRunStatus
 from app.models.orm import Ticket
 from app.repositories.ticket_repository import (
     fetch_all_tickets,
@@ -12,15 +12,28 @@ from app.repositories.ticket_repository import (
     remove_ticket,
     save_ticket,
 )
+from app.repositories.workflow_run_repository import (
+    fetch_workflow_run_by_ticket,
+    modify_workflow_run_status,
+)
 
-# CANCELLED is included so a retried cancel succeeds.
-# TRIAGED is excluded until cancelling can also cancel the Workflow Run.
+# CANCELLED is included so a retried cancel succeeds. TRIAGED is cancellable because
+# cancelling also cancels the Ticket's Workflow Run.
 CANCELLABLE_STATUSES = [
     TicketStatus.CREATED,
     TicketStatus.QUEUED,
     TicketStatus.TRIAGING,
+    TicketStatus.TRIAGED,
     TicketStatus.UNMATCHED,
     TicketStatus.CANCELLED,
+]
+# COMPLETED and FAILED are left out: finished work can't be withdrawn, so its Ticket can't
+# be cancelled either.
+CANCELLABLE_RUN_STATUSES = [
+    WorkflowRunStatus.AWAITING_INPUTS,
+    WorkflowRunStatus.READY,
+    WorkflowRunStatus.RUNNING,
+    WorkflowRunStatus.CANCELLED,
 ]
 
 
@@ -52,4 +65,16 @@ def update_ticket(session: Session, ticket_id: UUID, params: dict) -> Ticket:
 
 
 def cancel_ticket(session: Session, ticket_id: UUID) -> Ticket:
-    return modify_ticket_status(session, ticket_id, CANCELLABLE_STATUSES, TicketStatus.CANCELLED)
+    # The Ticket first, then its Run: Triage locks them in the same order, so they can't deadlock.
+    # Holding the Ticket's lock also means Triage can't add a Run before the lookup below.
+    ticket = modify_ticket_status(session, ticket_id, CANCELLABLE_STATUSES, TicketStatus.CANCELLED)
+    try:
+        run, _ = fetch_workflow_run_by_ticket(session, ticket_id)
+    except KeyError:
+        # Never triaged, so there is no Run to cancel.
+        return ticket
+    # Raises ValueError for a finished Run; the caller rolls back the Ticket's change too.
+    modify_workflow_run_status(
+        session, run.run_id, CANCELLABLE_RUN_STATUSES, WorkflowRunStatus.CANCELLED
+    )
+    return ticket
