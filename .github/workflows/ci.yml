@@ -32,6 +32,9 @@ jobs:
     timeout-minutes: 10
     env:
       DATABASE_URL: postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test
+      # Dummy credentials: boto3 won't sign requests without some, and ElasticMQ ignores them.
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

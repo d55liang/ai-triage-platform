@@ -4,7 +4,7 @@ Interview-prep notes: what was decided, why, what else was considered, and what 
 
 ## Overview
 
-AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11, §12 and §15–§17). Today the Ticket and Workflow Definition APIs exist: a FastAPI backend persisting to Aurora PostgreSQL.
+AI Triage Platform turns natural-language requests into structured work. A User talks to the Intake Agent; each distinct request becomes a Ticket; Triage matches the Ticket to a predefined Workflow Definition once its Match Confidence clears that definition's Confidence Threshold, which creates a Workflow Run (see §11, §12 and §15–§19). Today the Ticket and Workflow Definition APIs exist: a FastAPI backend persisting to Aurora PostgreSQL.
 
 ```text
 Client ──HTTP──▶ FastAPI
@@ -167,31 +167,32 @@ Status: **done**.
 
 ## 11. Ticket lifecycle: a status per handoff, ending at Triage
 
-Status: **enum and cancelling done**; the queue and workers that drive the other transitions are planned.
+Status: **enum and cancelling done**; the outbox, SQS and Triage workers that drive the other transitions are designed in §18. CREATED is being removed (see *Why*), and UNMATCHED is no longer final: after the User clarifies, the same Ticket is queued again.
 
 ```text
-CREATED ──publish──▶ QUEUED ──worker claims──▶ TRIAGING ──match──▶ TRIAGED
-   ▲                   ▲                          ├──no match──▶ UNMATCHED
-   └ re-publish        └──── timeout / retry ─────┤
-     (stuck in                                    └──retries used up──▶ FAILED
-      CREATED)
-CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING, UNMATCHED and TRIAGED
+insert + outbox row ─▶ QUEUED ──worker claims──▶ TRIAGING ──every provider agrees──▶ TRIAGED
+                          ▲                         ├──no agreed match──▶ UNMATCHED ──User clarifies──┐
+                          ├── SQS redelivery ───────┤                                                 │
+                          │   (stale claim)         └──DLQ after 3 tries──▶ FAILED                    │
+                          └───────────────────────────────────────────────────────────────────────────┘
+CANCELLED: reachable by User action from QUEUED, TRIAGING, UNMATCHED and TRIAGED
            (from TRIAGED, its Workflow Run is cancelled too, unless it has finished; see §17)
 ```
 
-- **Decision:** seven Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
+- **Decision:** six Ticket Statuses (see `GLOSSARY.md`), one per handoff between the API, the queue and the triage workers. The lifecycle ends at TRIAGED; completion belongs to the Workflow Run, which gets its own status. Stored as `VARCHAR(20)` with a `CHECK` constraint, not a native Postgres enum. Status is system-managed, so `PATCH` can't set it.
 - **Why:**
   - Each status is a place a Ticket can get stuck, so each one can be monitored and recovered.
-  - **CREATED vs QUEUED** covers the dual-write problem: saving to Postgres and publishing to the queue are two systems, and the publish can fail after the save commits. A Ticket left in CREATED is found and re-published. The standard fix later is a transactional outbox (Ticket and outbox row in one transaction; a separate process publishes).
-  - **TRIAGING** lets a worker claim a Ticket idempotently: `UPDATE ... SET status = 'TRIAGING' WHERE ticket_id = :id AND status = 'QUEUED'`. Queues deliver at least once, so only the worker whose update matches a row proceeds. A crashed worker leaves TRIAGING, which a timeout returns to QUEUED.
+  - **Why CREATED existed, and why it goes:** saving to Postgres and publishing to the queue are two systems, and the publish can fail after the save commits. CREATED marked "saved, publish not confirmed" so a sweeper could re-publish it. That design also had a race: a worker could receive the message before CREATED → QUEUED committed, find no QUEUED row and drop it. The transactional outbox (§18) makes publishing guaranteed, so a Ticket is inserted as QUEUED with its outbox row in one transaction, and nothing changes its status after publishing. Removing the value needs a hand-written `CHECK` migration.
+  - **TRIAGING** lets a worker claim a Ticket idempotently: `UPDATE ... SET status = 'TRIAGING' WHERE ticket_id = :id AND status = 'QUEUED'`. Queues deliver at least once, so only the worker whose update matches a row proceeds. A crashed worker leaves TRIAGING, which the next SQS delivery takes over once the claim is stale (§18).
   - **UNMATCHED** and **FAILED** give the unhappy paths a home instead of leaving Tickets in TRIAGING.
   - Ending at TRIAGED gives each fact one owner. If the Ticket mirrored the Run's outcome, the two could drift.
 - **Alternatives:**
   - The Ticket mirrors the Run (`COMPLETED`, `CLOSED`): one field to read, but two sources of truth kept in sync by hand.
   - A native Postgres `ENUM`: also enforced, but removing or renaming a value means re-creating the type.
-  - Fewer statuses (`CREATED`, `TRIAGED`): simpler, but stuck and failed Tickets are invisible.
+  - Fewer statuses (`QUEUED`, `TRIAGED`): simpler, but stuck and failed Tickets are invisible.
+  - Keeping CREATED with the outbox (the relay moves it to QUEUED after sending): the status records publishing, but the worker-before-update race returns, so workers must claim from CREATED too.
 - **Tradeoffs:** "is the User's request done?" needs a join to the Workflow Run, or a value computed at read time. Changing the allowed values needs a hand-written migration, because Alembic autogenerate doesn't detect `CHECK` changes.
-- **Soundbite:** "Each Ticket Status is a handoff in the pipeline, so I can see exactly where a Ticket is stuck. CREATED vs QUEUED covers the dual-write problem, and TRIAGING is claimed with a conditional update so duplicate deliveries are harmless. Once triaged, progress belongs to the Workflow Run."
+- **Soundbite:** "Each Ticket Status is a handoff in the pipeline, so I can see exactly where a Ticket is stuck. The outbox covers the dual-write problem, and TRIAGING is claimed with a conditional update so duplicate deliveries are harmless. Once triaged, progress belongs to the Workflow Run."
 
 ### Cancelling: a compare-and-set in one request
 
@@ -212,20 +213,21 @@ CANCELLED: reachable by User action from CREATED, QUEUED, TRIAGING, UNMATCHED an
 Status: **planned**.
 
 ```text
-User message ─▶ Intake Agent (one LLM call per turn, with tools)
+User Message ─▶ Intake Agent (a bounded tool-calling loop per turn)
                  ├─ new domain request ─▶ create_ticket ─▶ queue ─▶ Triage workers ─▶ Workflow Run
                  ├─ about a Ticket     ─▶ list_tickets / cancel_ticket (synchronous API calls)
                  └─ unclear            ─▶ ask the User
 ```
 
-- **Decision:** the Intake Agent is an LLM with tool calling. Platform operations (create, list, cancel a Ticket) are tools backed by API endpoints. Domain requests ("order a laptop") become Tickets and go through Triage on asynchronous workers. Rule of thumb: if it changes the platform's own state, it's a tool; if it's work the User wants done, it's a Ticket.
+- **Decision:** the Intake Agent is an LLM with tool calling. A turn is a loop written in the service, not one call: the model asks for a tool, the service runs it and returns the result, and the model continues until it writes its reply, with a cap of about five iterations. It replies synchronously, without streaming. Platform operations (create, list, cancel a Ticket) are tools backed by API endpoints. Domain requests ("order a laptop") become Tickets and go through Triage on asynchronous workers. Rule of thumb: if it changes the platform's own state, it's a tool; if it's work the User wants done, it's a Ticket.
 - **Why:**
   - Platform operations are few, fixed in code, and must be instant and exact. Domain requests are many, defined as data by admins, and ambiguous, which is what Match Confidence and Confidence Thresholds are for.
-  - Choosing a tool costs nothing extra: it happens in the same LLM call that writes the reply. The expensive matching only runs for extracted Tickets, off the request path.
+  - Choosing a tool happens inside the turn's loop. The expensive matching runs only for extracted Tickets, on workers, off the request path.
   - Cancelling is a synchronous call, not a queue message. Workers never receive "cancel"; they respect the status, because every transition is a compare-and-set (`UPDATE ... WHERE status = <expected>`). A worker that claims or finishes a cancelled Ticket matches no row and stops.
   - Single-purpose endpoints (`/cancel` rather than a generic status `PATCH`) are easier for an LLM to call correctly.
 - **Alternatives:** model platform operations as Workflow Definitions and triage everything. One mechanism, but a cancel becomes a Ticket about a Ticket, waits on the queue while the target keeps moving, can come back UNMATCHED, and still needs platform code to change statuses.
 - **Tradeoffs:** two paths to build and explain. Tool calls are only as good as the model's choice, so the service must still check ownership and allowed transitions: the LLM decides what to call, the service decides what's allowed, and tool calls are never trusted for authorisation.
+- **LLM providers:** the Intake Agent uses the Anthropic API. Triage uses several Triage Providers and needs them to agree (§18, [ADR 0003](docs/adr/0003-consensus-triage.md)). Prompts are built by dynamic context injection: the current version of each enabled Workflow Definition, and for the Intake Agent the Conversation's current state, is assembled at runtime (§15, §19). Prompt engineering (role, task, context, output contract, temperature) is a later pass.
 - **Scaling Triage later:** with many Workflow Definitions, match in two stages. Embedding similarity shortlists a few candidates cheaply; the LLM computes Match Confidence only for the shortlist.
 - **Soundbite:** "Platform operations are tools: fast, deterministic, few. Domain requests become Tickets and go through Triage, because matching against an open-ended, admin-defined set of workflows is what actually needs confidence scoring. The database status is the source of truth, and every transition is a compare-and-set, so a cancel can't race with a worker."
 
@@ -358,6 +360,7 @@ POST /api/workflow-definitions/{id}/enable         set is_enabled to true; a rep
 - **Why:** 0.80 is stored exactly, so the comparison at the boundary is exact. A threshold of 0 would match everything. With no default, each Admin has to choose a threshold based on how consequential the workflow is.
 - **Alternatives:** `DOUBLE PRECISION` (a plain `float` everywhere, but 0.80 is only approximate, so the boundary depends on floating-point behaviour).
 - **Tradeoffs:** Python sees `Decimal`, which Pydantic v2 writes to JSON as a string unless the response model says otherwise.
+- **Where Match Confidence comes from (decided):** the model reports it as a number from 0.00 to 1.00 for each candidate definition, and Triage compares it with the threshold in code, never in the prompt. Self-reported confidence is poorly calibrated, which is accepted for now (see *Known gaps*).
 
 ### Sample Requests: dynamic context injection
 
@@ -382,7 +385,7 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
             submit tool ─▶ service validates types and completeness ─▶ Run starts
 ```
 
-- **Decision:** matching is about intent only. Triage creates the Run even when Required Inputs are missing, the Ticket becomes TRIAGED, and the Run waits. The Intake Agent learns what is missing through Run → Workflow Definition Version → `required_inputs`, which the service adds to its prompt on every turn. It submits values through a tool, and the service validates them. Values found in `Ticket.message` are accepted, and values found elsewhere in the Conversation are confirmed with the User. When Triage finishes, the worker commits and then publishes an event, which starts an Intake Agent turn with no User message. That turn writes the question into the Conversation, and the client sees it by polling at first.
+- **Decision:** matching is about intent only. Triage creates the Run even when Required Inputs are missing, the Ticket becomes TRIAGED, and the Run waits. The Intake Agent learns what is missing through Run → Workflow Definition Version → `required_inputs`, which the service adds to its prompt on every turn. It submits values through a tool, and the service validates them. Values found in `Ticket.message` are accepted, and values found elsewhere in the Conversation are confirmed with the User. When Triage finishes, the worker writes a `ticket.triaged` outbox event in the same transaction as TRIAGED (§18), and its delivery starts an Intake Agent turn with no User Message. That turn writes the question into the Conversation, and the client sees it by polling at first.
 - **Why:**
   - The Intake Agent can't collect inputs up front, because it doesn't know the workflow until Triage finishes.
   - Keeping inputs on the Run leaves the Ticket lifecycle (§11) unchanged.
@@ -395,7 +398,7 @@ Triage selects definition ─▶ Ticket TRIAGED + Workflow Run waiting for input
 
 ## 17. Workflow Runs: one per Ticket, pinned to a version
 
-Status: **in progress**, in three PRs: the table, `create_workflow_run` and the read routes (built); Required Input submission (built); cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one (built). Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
+Status: **done**, built in three PRs: the table, `create_workflow_run` and the read routes; Required Input submission; cancelling a TRIAGED Ticket with its Run, and the 409 for deleting a Ticket that has one. Carrying out Steps is a later milestone. Builds on [ADR 0002](docs/adr/0002-immutable-workflow-definition-versions.md).
 
 ```text
 workflow_runs
@@ -444,7 +447,7 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - **Decision:** the Run doesn't store the Match Confidence that selected it.
 - **Why:** a Run is selected under one rule, Match Confidence `>=` the version's Confidence Threshold, and the threshold is already kept on the version. What the Run needs to do its work is the version and the inputs. Why Triage chose it is Triage's concern.
 - **Alternatives:** a `match_confidence NUMERIC(3,2)` column (keeps the exact score, for debugging Triage).
-- **Tradeoffs:** when several definitions qualify, the highest Match Confidence wins (§12), and nothing records the score or the runners-up. If tuning Triage ever needs that, it belongs in a Triage record, not on the Run.
+- **Tradeoffs:** the scores live in `triage_results` instead (§18), one row per Triage Provider, so the Run stays about the work and Triage keeps its own record.
 
 ### Workflow Run Status: the full set up front
 
@@ -512,6 +515,142 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - **Where it's built:** `get_missing_inputs(run, version)` lives in `workflow_run_service.py`, in the version's key order, because input submission needs the same check. The read services return `(run, version)`, and the router's `_to_item` builds the item, as the Workflow Definition router does. `GET /tickets/{ticket_id}/workflow-run` lives in `ticket_router`, which owns the URL, and calls the Workflow Run service. A missing Ticket and a Ticket without a Run give the same 404.
 - **Tradeoffs:** every read loads the version for the join and for `missing_inputs`. The router calls a second service function to build the item.
 
+## 18. Triage: outbox, SQS and consensus across providers
+
+Status: **designed**, to be built before Conversation (§19), in four PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
+
+1. **Outbox (built):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
+2. **Triage decision:** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (claim, consensus, finishing with the fencing check, calling `create_workflow_run`), tested by calling the service directly.
+3. **Workers and providers:** the triage worker loop, the DLQ consumer, and the Anthropic and Gemini adapters, with their dependencies, rules files and env vars documented.
+4. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
+
+Decides how a Ticket gets from the API to a Triage worker and back, and how the worker decides. See [ADR 0003](docs/adr/0003-consensus-triage.md).
+
+```text
+Intake Agent tool ─▶ tx: insert Ticket (QUEUED) + outbox row ticket.queued
+                                    │
+relay process ─── polls outbox ─────┘──▶ SQS triage queue (standard) ──3 failed receives──▶ DLQ ─▶ Ticket FAILED
+                                                   │
+triage worker (separate process, long polling) ◀───┘
+  tx1: claim QUEUED → TRIAGING, set claimed_at          commit
+       every Triage Provider scores the Ticket            no transaction open
+  tx2: insert triage_results, then
+       ├─ all agree ─▶ TRIAGING → TRIAGED + Workflow Run + outbox ticket.triaged
+       └─ otherwise ─▶ TRIAGING → UNMATCHED              + outbox ticket.unmatched
+       commit, then delete the SQS message
+```
+
+```text
+outbox_events
+  event_id      UUID PK
+  event_type    VARCHAR(50)    OutboxEventType, CHECK constraint (as §11); stores the value (ticket.queued), not the member name
+  payload       JSONB          {"ticket_id": ...}
+  created_at    TIMESTAMPTZ    DEFAULT now()
+  published_at  TIMESTAMPTZ    NULL until the relay has sent it; partial index WHERE published_at IS NULL
+
+triage_results                 one row per Triage Provider per attempt
+  result_id         UUID PK
+  ticket_id         UUID FK    indexed; ON DELETE RESTRICT
+  provider          VARCHAR    e.g. anthropic, gemini
+  model             VARCHAR    the exact model ID
+  definition_id     UUID FK    NULL when the provider selected nothing
+  match_confidence  NUMERIC(3,2) NULL, as the threshold
+  created_at        TIMESTAMPTZ
+
+tickets.claimed_at       TIMESTAMPTZ NULL      set by each claim
+tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
+```
+
+### The transactional outbox
+
+- **Decision:** nothing writes to Postgres and SQS in one step. A Ticket and its `ticket.queued` outbox row are inserted in one transaction. A relay process loops: `SELECT ... FROM outbox_events WHERE published_at IS NULL ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED`, sends each row to the queue its `event_type` maps to, sets `published_at`, and commits. The outbox is generic: the worker writes `ticket.triaged` and `ticket.unmatched` the same way, which start the Intake Agent turns of §16 and §19.
+- **Why:**
+  - Commit-then-send loses the message if the process dies in between; send-then-commit publishes a Ticket that may roll back. With one transaction, a saved Ticket always has an outbox row, and the relay eventually sends it.
+  - A relay that crashes after sending but before committing sends the row again. That's a duplicate, which the worker's compare-and-set claim makes harmless: exactly-once across two systems is impossible, so the design is at-least-once delivery with an idempotent consumer.
+  - `SKIP LOCKED` lets two relays run without sending the same row.
+  - The relay holds those row locks while it sends, the one place a session stays open across an external call. It sends each batch with one `SendMessageBatch` call (up to 10 messages, matching `LIMIT 10`), so the lock lasts tens of milliseconds, not the seconds of an LLM call. A batch can partly fail; only the events SQS accepted are marked published, and the rest go in the next batch.
+  - No foreign key from an event to its subject: events of any type share the table, and published rows are pruned on their own schedule, independent of the Tickets they mention.
+  - It removes CREATED (§11): a Ticket's publishing is guaranteed, so there's no "saved but not published" state to recover from.
+- **Code layout:** `outbox_repository` fetches with `with_for_update(skip_locked=True)` and marks rows published; `app/queue.py` holds the one SQS client per process (`SQS_ENDPOINT_URL` points it at ElasticMQ when set) and wraps `send_message_batch`; `outbox_service.publish_pending_events` groups events by queue and returns how many it sent; `app/workers/relay.py` loops, one `SessionLocal.begin()` per batch, immediately again after a full batch and after about 1 s otherwise. Tests call the service directly and purge the local queue first, because the queue isn't rolled back with the database.
+- **Alternatives:** a lease column on outbox rows so no lock is held during the send (follows the rule strictly, but one more column and a takeover path for a call that is already fast); `event_type` as an SQS message attribute instead of an envelope (smaller body, but two places to read); commit, publish, then CREATED → QUEUED with a sweeper (no extra table or process, but the worker-before-update race and a sweeper to run); Postgres as the queue with `SKIP LOCKED` workers (no dual write at all and no AWS, but no SQS redelivery, DLQ or visibility timeouts, which then have to be built by hand).
+- **Tradeoffs:** one more table and one more process. Delivery is delayed by the relay's polling interval. Published rows accumulate and need pruning eventually.
+- **Soundbite:** "I never write to two systems in one step. The Ticket and its outbox event commit together, a relay publishes to SQS, and a duplicate from a relay crash is harmless because the worker's claim is a compare-and-set."
+
+### SQS: a standard queue, a DLQ, and stale claims
+
+- **Decision:** a standard queue (not FIFO), whose message body is an envelope, `{"event_id", "event_type", "payload"}`, with `payload` as stored in the outbox (`{"ticket_id": ...}`). Every queue gets the same shape, so the `intake-events` consumer can tell `ticket.triaged` from `ticket.unmatched`, and `event_id` traces a message back to its outbox row. The visibility timeout is about 60 s. A DLQ with `maxReceiveCount = 3` catches Tickets that keep failing, and a DLQ consumer compare-and-sets them to FAILED. The worker runs as its own long-polling process, not inside Uvicorn.
+- **Claiming:** `UPDATE tickets SET status = 'TRIAGING', claimed_at = now() WHERE ticket_id = :id AND (status = 'QUEUED' OR (status = 'TRIAGING' AND claimed_at < now() - interval '90 seconds')) RETURNING claimed_at`. The interval is longer than the visibility timeout, so a crashed worker's Ticket is taken over by the redelivery instead of hanging in TRIAGING.
+- **Finishing:** tx2 compare-and-sets `WHERE status = 'TRIAGING' AND claimed_at = :my_claimed_at`. `claimed_at` is a fencing token: a slow worker whose claim was taken over matches no row, so two workers can never both finish the same Ticket.
+- **Why:**
+  - Duplicate delivery is already handled by the claim, and order doesn't matter, so FIFO's limits and cost buy nothing.
+  - A message that carries only IDs can't go stale; the worker reads the current Ticket and definitions from Postgres.
+  - "Retries used up" in §11 becomes SQS's own receive count, with no retry counter of our own.
+  - No transaction is open during LLM calls, so a cancel never waits on a provider (as §19's turns).
+- **Errors:** a provider error, malformed output, a `definition_id` that wasn't a candidate or a Match Confidence outside 0–1 is an exception. The worker validates provider output with a Pydantic model. The message isn't deleted, SQS redelivers it, and the third failure sends it to the DLQ.
+- **Alternatives:** a `retries` column and our own backoff (works with any queue, but duplicates what SQS does); a separate timeout sweeper for TRIAGING (one more process, where redelivery already triggers the check).
+- **Tradeoffs:** tuning: the visibility timeout must cover every provider's latency, and the stale-claim interval must stay above it. A Ticket that fails three times needs a person to look at it.
+
+### Consensus across Triage Providers
+
+- **Decision:** each Triage Provider scores the Ticket independently against the current version of every enabled Workflow Definition and selects its best qualifying definition: the highest Match Confidence that meets that definition's Confidence Threshold, or none. A Workflow Run is created only if every provider selected the same definition. Otherwise the Ticket is UNMATCHED. Every provider's selection is stored in `triage_results`, whatever the outcome.
+- **How:** the providers are called in parallel from a `ThreadPoolExecutor` (the worker stays synchronous), each with a timeout of about 20 s, so the slowest one sets the latency and both fit inside the visibility timeout. A timeout is a provider error. If no definition is enabled, no provider is called, nothing is stored and the Ticket is UNMATCHED. The active providers come from `TRIAGE_PROVIDERS` (e.g. `anthropic,gemini`), so one can run alone locally. Models: `claude-haiku-5-5` and Gemini Flash, two small, fast models, which keeps the comparison fair.
+- **Why:** a wrong Run starts work nobody asked for, while an UNMATCHED Ticket costs one clarifying question. Requiring agreement trades recall for precision, which is the same reason Confidence Thresholds exist. The stored results are also the comparison between providers.
+- **Alternatives:** one primary provider, plus offline evaluation on a labelled set (cheaper and faster, but one model's mistakes go straight to Runs); shadow mode (others score but never decide); a separate `DISPUTED` status for disagreement (more precise, but the User sees the same clarifying questions as for UNMATCHED).
+- **Tradeoffs:** cost is the sum of the providers, latency is the slowest, and availability is the product: if one provider is down, Triage fails and retries. Gemini's free-tier rate limit caps throughput. "UNMATCHED" now covers both "nothing qualified" and "providers disagreed", which only `triage_results` tells apart.
+- **Soundbite:** "Two different models must independently pick the same workflow above its threshold before any work starts. I trade some recall for precision, and every provider's answer is stored, so the same data tells me how the models compare."
+
+### Triage Providers behind a Protocol
+
+- **Decision:** a `TriageProvider` `typing.Protocol` with `score(request, definitions) -> list[MatchResult]`, implemented once per provider with that provider's SDK (`anthropic`, `google-genai`), each using its own structured output. Thresholds and consensus are plain code in the Triage service, never in a prompt. Tests use a fake provider, so `pytest` never calls an LLM.
+- **Why:** the service doesn't know which SDK it's talking to, and each adapter is a short translation you can read in one pass. Structured output is where providers differ most, so that's where the code should be explicit.
+- **Alternatives:** LiteLLM (one dependency for every provider, but a large dependency tree and an abstraction that leaks around structured output).
+- **Tradeoffs:** two SDKs to keep up to date, and a third provider means a third adapter.
+
+### Local testing
+
+- **Decision:** ElasticMQ, an SQS-compatible server, runs in `docker-compose.yml` next to Postgres and in CI. An `SQS_ENDPOINT_URL` env var points boto3 at it, and tests set it. One deliberate test against real SQS is marked `aws`, like `aurora`.
+- **Alternatives:** moto (in-process, no container, but it mocks boto3 itself, so less of the real protocol is tested).
+- **AWS setup still needed (with approval):** the queue, the DLQ, and an IAM policy for the app's `sqs:*Message` actions on them; the `daniel` IAM user currently has no SQS permissions.
+
+## 19. Conversation and the Intake Agent turn
+
+Status: **designed**, to be built after Triage (§18).
+
+```text
+conversations                       messages
+  conversation_id  UUID PK            message_id       UUID PK
+  user_id          VARCHAR            conversation_id  UUID FK, index (conversation_id, created_at)
+  turn_started_at  TIMESTAMPTZ NULL   author           VARCHAR(20)  USER | INTAKE_AGENT, CHECK constraint
+  created_at       TIMESTAMPTZ        content          TEXT
+                                      created_at       TIMESTAMPTZ
+
+tickets: + conversation_id UUID FK NOT NULL (indexed); message → request; − user_id
+```
+
+```text
+POST /api/conversations                     create; body {user_id}
+GET  /api/conversations/{id}                the Conversation and its Tickets
+GET  /api/conversations/{id}/messages       Messages, oldest first, paginated; clients poll it
+POST /api/conversations/{id}/messages       a User Message; runs a turn; 201 with the Intake Agent's reply
+POST /api/tickets and PATCH /api/tickets/{id} are removed: Tickets change only through the Intake Agent.
+```
+
+- **Decision:**
+  - Every Ticket belongs to a Conversation, and only the Intake Agent creates Tickets, so `POST /api/tickets` goes away. The owner (`user_id`) lives on the Conversation only.
+  - Only User and Intake Agent Messages are stored. Tool calls and their results aren't. Each turn, the service injects the Conversation's current state: its Tickets, their statuses and their Runs' `missing_inputs`.
+  - A turn commits step by step, and no transaction is open during an LLM call: (1) save the User's Message, (2) each tool call in its own transaction, (3) save the Intake Agent's reply. If an LLM call fails mid-turn, effects already committed stay, and the User gets a fixed error reply.
+  - Messages are read from Postgres only, with no application cache. Each turn sends the last 20 Messages plus the injected state, using `claude-sonnet-5-5`.
+  - **Clarifying an UNMATCHED Ticket:** the tool `clarify_ticket(ticket_id, request)` takes the whole request rewritten as one coherent statement. In one transaction the service compare-and-sets UNMATCHED → QUEUED, replaces `request` and writes a `ticket.queued` outbox row. The old wording stays in the Messages and the old scores in `triage_results`. After 3 Triage attempts the agent tells the User no workflow fits, and the Ticket stays UNMATCHED.
+  - **One turn per Conversation:** a turn reads the state once and acts on it for seconds, so two concurrent turns (a double send, or a User turn meeting an agent-initiated one) could create duplicate Tickets or ask about a Ticket just cancelled. A turn first takes a lease: `UPDATE conversations SET turn_started_at = now() WHERE conversation_id = :id AND (turn_started_at IS NULL OR turn_started_at < now() - interval '2 minutes') RETURNING turn_started_at`, and clears it in the transaction that saves the reply, `WHERE turn_started_at = :mine` (a fencing token, as `claimed_at` in §18). A User turn that loses gets 409 before its Message is saved. An agent-initiated turn that loses leaves its SQS message undeleted and runs after redelivery. A crashed turn's lease goes stale after 2 minutes, longer than five loop iterations.
+  - **Agent-initiated turns:** `ticket.triaged` and `ticket.unmatched` go to a second SQS queue, `intake-events`. An intake worker consumes it and runs a turn with no User Message, which asks for missing Required Inputs or clarifying questions. Clients see new Messages by polling. The processes besides the API (relay, triage worker, intake worker) live in `app/workers/`.
+- **Why:**
+  - Replayed tool results would show Ticket statuses as they were, not as they are. Injected state is smaller and always current.
+  - A whole-turn transaction would hold a pooled connection and row locks across seconds of LLM calls (a cancelled Ticket would block the Triage worker's claim), and a late failure would roll back the User's own Message.
+  - Workers never read the Conversation, and the Intake Agent's read is one indexed query, milliseconds next to the LLM call. A cache would add infrastructure and a second copy to keep in step. The caching that pays off is LLM prompt caching of the fixed prefix, which belongs to the prompt-engineering pass.
+- **Alternatives:** a session-level advisory lock per Conversation (released automatically if the connection drops, but it holds a pooled connection for the whole turn); `SELECT ... FOR UPDATE` on the Conversation (needs a transaction open across LLM calls); appending a clarification to the request instead of rewriting it (simpler, but Triage must untangle "laptop… actually a monitor"); store tool calls and replay them (the model sees its own reasoning, but stale state and a bigger prompt); one transaction per turn (all-or-nothing turns, at the costs above); a Redis or ElastiCache copy of each Conversation (faster reads that nothing needs).
+- **Tradeoffs:** a failed turn can leave committed effects without a reply that mentions them; the next turn's injected state shows them. The renamed `request` column and dropped `user_id` need a migration and test updates.
+- **Soundbite:** "The Conversation stores only what the User and the agent said. Every turn rebuilds the current state from the database, and nothing holds a transaction while an LLM is thinking."
+
 ---
 
 ## Known gaps
@@ -522,5 +661,6 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 - The test session is shared by every request in a test, so a request that fails after writing could leave a stale object in its cache: the savepoint rolls back the database, but an object refreshed by `UPDATE ... RETURNING` isn't expired with it. The override in `tests/conftest.py` expires the session after a failed request, as a fresh production session would never see the stale object. Found when a cancel that returned 409 still read back as CANCELLED.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.
 - `alembic check` doesn't compare `CHECK` constraints, so adding a `TicketStatus` member without a migration passes it. An API test that stores the new status would fail against the old constraint, so add one with each new status.
-- Nothing exists yet for Conversation or Triage. Workflow Runs can be created, read, given Required Inputs and cancelled through their Ticket (§17).
-- A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. `tickets` needs a `conversation_id` when Conversation lands.
+- Match Confidence is the model's own estimate and isn't calibrated, so a 0.80 threshold doesn't mean 80% of such matches are right. Comparing providers on labelled requests is the first step towards measuring it.
+- Nothing exists yet for Conversation or Triage; both are designed (§18, §19). Workflow Runs can be created, read, given Required Inputs and cancelled through their Ticket (§17).
+- A Ticket has no link to its Conversation, so the Intake Agent can't read the history §16 relies on. Decided for the Conversation milestone: every Ticket belongs to a Conversation (`conversation_id NOT NULL`), only the Intake Agent creates Tickets, so `POST /api/tickets` goes away, `tickets.message` is renamed to `request`, because *Message* now means an entry in a Conversation, and `tickets.user_id` is dropped: the owner lives on the Conversation, so a copy on the Ticket could only drift.

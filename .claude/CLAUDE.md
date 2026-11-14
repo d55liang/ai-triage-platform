@@ -25,6 +25,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Lint / format | Ruff (`pyproject.toml`) | |
 | Tests | pytest, httpx2 (`TestClient`) | |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) | |
+| Queue | Amazon SQS through `boto3`, fed by a transactional outbox; ElasticMQ in Docker locally and in CI | Queues in AWS (need approval) |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -34,22 +35,26 @@ Technology-specific rules live in [rules/](rules/).
 app/
   main.py                 FastAPI app, /health, router registration
   database.py             Engine (IAM token per connection, pinned TLS), SessionLocal, Base, get_session
+  queue.py                SQS client (ElasticMQ when SQS_ENDPOINT_URL is set), queue URLs, batch send
   dependencies.py         FastAPI dependencies (SessionDep)
   models/request.py       Pydantic request bodies
   models/response.py      Pydantic response bodies
   models/orm.py           SQLAlchemy table models
-  models/enums.py         StrEnums shared by API and table models (TicketStatus, RequiredInputType)
+  models/enums.py         StrEnums shared by API and table models (TicketStatus, OutboxEventType, RequiredInputType)
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
+  workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
-  conftest.py             Forces the local DATABASE_URL; migration and client fixtures
+  conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
   test_tickets_api.py     Ticket API tests through TestClient
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
+  test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
-docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433
+docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
+elasticmq.conf            Local queues: triage and its DLQ, as in AWS
 .github/workflows/ci.yml  Ruff, alembic check and pytest on every PR
 ```
 
@@ -59,6 +64,7 @@ docker-compose.yml        PostgreSQL 17 for tests on 127.0.0.1:5433
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload      # http://localhost:8000/docs, /health, /api/tickets
+python -m app.workers.relay        # outbox relay: publishes saved events to SQS; Ctrl-C stops it after the current batch
 ```
 
 ```bash
@@ -78,7 +84,7 @@ ruff format .            # format; add --check to verify without writing
 ```
 
 ```bash
-docker compose up -d     # start the local test database (Docker must be running)
+docker compose up -d     # start the local test database and ElasticMQ (Docker must be running)
 pytest                   # run the local tests; never touches Aurora
 pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
 ```
@@ -91,11 +97,13 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 `DATABASE_URL` is optional and selects a plain engine instead of the IAM one (see `DESIGN.md` §10). `tests/conftest.py` always sets it to the local test database.
 
+`TRIAGE_QUEUE_URL` is required by anything that imports `app/queue.py` (the relay; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324` and `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage`. `tests/conftest.py` always sets both, and `AWS_REGION`.
+
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)).
-- **In progress:** Workflow Run. Design done (`DESIGN.md` §17); implementation in three PRs: table, `create_workflow_run` for Triage and read routes (merged); Required Input submission (merged); cancelling a TRIAGED Ticket together with its Run, and the 409 for deleting a Ticket that has one (in review). Executing Steps is a later milestone.
-- **Next:** Conversation (including the Intake Agent turn that collects Required Inputs, `DESIGN.md` §16) and Triage.
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone.
+- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in four PRs: transactional outbox and relay, removing CREATED (built on `feat/ticket-outbox`, PR not opened yet); the Triage decision with consensus across Triage Providers; the workers and the Anthropic and Gemini adapters; AWS queues and IAM.
+- **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); then an offline labelled evaluation set that measures each Triage Provider's accuracy.
 
 Update this section when a milestone starts or lands.
 

@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17); the Intake Agent and Triage are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS (§18); the Triage workers and the Intake Agent are not built yet.
 
 ## Tech stack
 
@@ -12,6 +12,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **SQLAlchemy 2** over **psycopg 3** with IAM database authentication, **Alembic** migrations
 - **Ruff** for lint and format
 - **pytest** against a local PostgreSQL 17 in Docker
+- **Amazon SQS** (via `boto3`), fed by a transactional outbox; **ElasticMQ** stands in locally
 - **GitHub Actions** runs Ruff, `alembic check` and pytest on every PR
 
 ## Setup
@@ -36,6 +37,15 @@ Write `KEY=value` with no spaces around `=`, so the file also loads in a shell (
 
 To use another PostgreSQL instead of Aurora, set the optional `DATABASE_URL`. The five variables above are then not needed.
 
+The outbox relay also needs a queue. To use the local ElasticMQ from `docker-compose.yml`, add:
+
+```bash
+SQS_ENDPOINT_URL=http://127.0.0.1:9324
+TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
+```
+
+Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need either variable.
+
 AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user.
 
 `certs/AmazonRootCA1.pem` is the public root certificate the database's TLS certificate chains to. The app verifies the connection against it; no setup needed.
@@ -54,6 +64,12 @@ uvicorn app.main:app --reload
 - Interactive docs: http://localhost:8000/docs
 - Health check: http://localhost:8000/health
 
+In a second terminal, start the outbox relay, which publishes each new Ticket's event to the triage queue (start the queue first with `docker compose up -d`):
+
+```bash
+python -m app.workers.relay
+```
+
 ## Lint and format
 
 With the venv active:
@@ -65,7 +81,7 @@ ruff format .
 
 ## Test
 
-Tests run against PostgreSQL 17 in Docker, so start Docker first. With the venv active:
+Tests run against PostgreSQL 17 and ElasticMQ (a local SQS) in Docker, so start Docker first. With the venv active:
 
 ```bash
 docker compose up -d

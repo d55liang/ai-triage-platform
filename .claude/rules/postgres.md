@@ -30,7 +30,7 @@ paths:
 - `SessionDep` uses `Depends(get_session, scope="function")` so the commit runs before the response is sent. With the default `"request"` scope it runs after, and a failed commit would follow a success response.
 - Repository functions take `session: Session` as their first parameter. They query, `add`, `delete` and `flush()`, but never open, commit, roll back or close a session. Call `flush()` when the response needs database-generated values (e.g. `created_at`) before the request commits.
 - Services pass the session through to repositories and never use it directly.
-- Don't make slow external calls (LLM, queue) while a session holds a connection; the pool is small.
+- Don't make slow external calls while a session holds a connection; the pool is small. LLM calls never run inside a session. The one exception is the outbox relay, which sends one SQS batch while holding its `FOR UPDATE SKIP LOCKED` row locks (`DESIGN.md` §18).
 - Repositories still raise `KeyError` for a missing row, so routers stay unchanged.
 
 ## Alembic

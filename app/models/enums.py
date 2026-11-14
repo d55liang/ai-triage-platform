@@ -2,7 +2,6 @@ from enum import StrEnum
 
 
 class TicketStatus(StrEnum):
-    CREATED = "CREATED"
     QUEUED = "QUEUED"
     TRIAGING = "TRIAGING"
     TRIAGED = "TRIAGED"
@@ -18,6 +17,10 @@ class WorkflowRunStatus(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+class OutboxEventType(StrEnum):
+    TICKET_QUEUED = "ticket.queued"
 
 
 class RequiredInputType(StrEnum):
