@@ -204,3 +204,6 @@ def test_create_ticket_commits() -> None:
     finally:
         with SessionLocal.begin() as session:
             session.execute(delete(Ticket).where(Ticket.ticket_id == ticket_id))
+            session.execute(
+                delete(OutboxEvent).where(OutboxEvent.payload["ticket_id"].astext == str(ticket_id))
+            )
