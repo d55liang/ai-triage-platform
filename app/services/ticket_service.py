@@ -2,8 +2,9 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
-from app.models.enums import TicketStatus, WorkflowRunStatus
+from app.models.enums import OutboxEventType, TicketStatus, WorkflowRunStatus
 from app.models.orm import Ticket
+from app.repositories.outbox_repository import save_outbox_event
 from app.repositories.ticket_repository import (
     fetch_all_tickets,
     fetch_ticket,
@@ -44,7 +45,15 @@ def create_ticket(session: Session, user_id: str, message: str) -> Ticket:
         "message": message,
         "status": TicketStatus.QUEUED,
     }
-    return save_ticket(session, ticket)
+    row = save_ticket(session, ticket)
+    # Same transaction as the Ticket, so a saved Ticket is always published; the relay sends it.
+    event = {
+        "event_id": uuid4(),
+        "event_type": OutboxEventType.TICKET_QUEUED,
+        "payload": {"ticket_id": str(ticket_id)},
+    }
+    save_outbox_event(session, event)
+    return row
 
 
 def get_all_tickets(session: Session) -> list[Ticket]:

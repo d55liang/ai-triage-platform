@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
@@ -19,7 +20,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-from app.models.enums import TicketStatus, WorkflowRunStatus
+from app.models.enums import OutboxEventType, TicketStatus, WorkflowRunStatus
 
 
 class Ticket(Base):
@@ -111,3 +112,37 @@ class WorkflowRun(Base):
         JSONB, server_default=text("'{}'::jsonb")
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OutboxEvent(Base):
+    """An event saved in the same transaction as the change it announces; the relay publishes it.
+
+    No foreign key to the subject: events of any type share the table, and published rows are
+    pruned on their own schedule.
+    """
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        # The relay reads only unpublished rows, oldest first; published rows drop out of the index.
+        Index(
+            "ix_outbox_events_unpublished",
+            "created_at",
+            postgresql_where=text("published_at IS NULL"),
+        ),
+    )
+
+    event_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    event_type: Mapped[OutboxEventType] = mapped_column(
+        Enum(
+            OutboxEventType,
+            name="outbox_event_type",
+            native_enum=False,
+            create_constraint=True,
+            length=50,
+            # Store "ticket.queued", not the member name "TICKET_QUEUED".
+            values_callable=lambda members: [member.value for member in members],
+        )
+    )
+    payload: Mapped[dict[str, str]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

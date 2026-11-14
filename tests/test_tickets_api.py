@@ -2,13 +2,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.main import app
-from app.models.enums import TicketStatus
-from app.models.orm import Ticket
+from app.models.enums import OutboxEventType, TicketStatus
+from app.models.orm import OutboxEvent, Ticket
 
 TICKET = {"user_id": "user-1", "message": "Reset my password"}
 UPDATE_MESSAGE = {"message": "Updated message"}
@@ -43,6 +43,20 @@ def test_create_ticket(client: TestClient) -> None:
     assert ticket["message"] == TICKET["message"]
     assert ticket["status"] == TicketStatus.QUEUED
     assert ticket["created_at"] is not None
+
+
+def test_create_ticket_writes_queued_event(client: TestClient, session: Session) -> None:
+    ticket = create_ticket(client)
+
+    # The outbox has no API, so the event is read from the database.
+    events = session.scalars(
+        select(OutboxEvent).where(OutboxEvent.payload["ticket_id"].astext == ticket["ticket_id"])
+    ).all()
+
+    assert len(events) == 1
+    assert events[0].event_type == OutboxEventType.TICKET_QUEUED
+    assert events[0].payload == {"ticket_id": ticket["ticket_id"]}
+    assert events[0].published_at is None
 
 
 def test_get_ticket(client: TestClient) -> None:

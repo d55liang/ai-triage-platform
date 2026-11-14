@@ -38,7 +38,7 @@ app/
   models/request.py       Pydantic request bodies
   models/response.py      Pydantic response bodies
   models/orm.py           SQLAlchemy table models
-  models/enums.py         StrEnums shared by API and table models (TicketStatus, RequiredInputType)
+  models/enums.py         StrEnums shared by API and table models (TicketStatus, OutboxEventType, RequiredInputType)
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping

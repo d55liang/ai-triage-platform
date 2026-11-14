@@ -519,7 +519,7 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 Status: **designed**, to be built before Conversation (§19), in four PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
-1. **Outbox:** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
+1. **Outbox:** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table (built), the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
 2. **Triage decision:** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (claim, consensus, finishing with the fencing check, calling `create_workflow_run`), tested by calling the service directly.
 3. **Workers and providers:** the triage worker loop, the DLQ consumer, and the Anthropic and Gemini adapters, with their dependencies, rules files and env vars documented.
 4. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
@@ -541,9 +541,9 @@ triage worker (separate process, long polling) ◀───┘
 ```
 
 ```text
-outbox
+outbox_events
   event_id      UUID PK
-  event_type    VARCHAR(50)    ticket.queued, ticket.triaged, ticket.unmatched
+  event_type    VARCHAR(50)    OutboxEventType, CHECK constraint (as §11); stores the value (ticket.queued), not the member name
   payload       JSONB          {"ticket_id": ...}
   created_at    TIMESTAMPTZ    DEFAULT now()
   published_at  TIMESTAMPTZ    NULL until the relay has sent it; partial index WHERE published_at IS NULL
@@ -563,11 +563,12 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 
 ### The transactional outbox
 
-- **Decision:** nothing writes to Postgres and SQS in one step. A Ticket and its `ticket.queued` outbox row are inserted in one transaction. A relay process loops: `SELECT ... FROM outbox WHERE published_at IS NULL ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED`, sends each row to the queue its `event_type` maps to, sets `published_at`, and commits. The outbox is generic: the worker writes `ticket.triaged` and `ticket.unmatched` the same way, which start the Intake Agent turns of §16 and §19.
+- **Decision:** nothing writes to Postgres and SQS in one step. A Ticket and its `ticket.queued` outbox row are inserted in one transaction. A relay process loops: `SELECT ... FROM outbox_events WHERE published_at IS NULL ORDER BY created_at LIMIT 10 FOR UPDATE SKIP LOCKED`, sends each row to the queue its `event_type` maps to, sets `published_at`, and commits. The outbox is generic: the worker writes `ticket.triaged` and `ticket.unmatched` the same way, which start the Intake Agent turns of §16 and §19.
 - **Why:**
   - Commit-then-send loses the message if the process dies in between; send-then-commit publishes a Ticket that may roll back. With one transaction, a saved Ticket always has an outbox row, and the relay eventually sends it.
   - A relay that crashes after sending but before committing sends the row again. That's a duplicate, which the worker's compare-and-set claim makes harmless: exactly-once across two systems is impossible, so the design is at-least-once delivery with an idempotent consumer.
   - `SKIP LOCKED` lets two relays run without sending the same row.
+  - No foreign key from an event to its subject: events of any type share the table, and published rows are pruned on their own schedule, independent of the Tickets they mention.
   - It removes CREATED (§11): a Ticket's publishing is guaranteed, so there's no "saved but not published" state to recover from.
 - **Alternatives:** commit, publish, then CREATED → QUEUED with a sweeper (no extra table or process, but the worker-before-update race and a sweeper to run); Postgres as the queue with `SKIP LOCKED` workers (no dual write at all and no AWS, but no SQS redelivery, DLQ or visibility timeouts, which then have to be built by hand).
 - **Tradeoffs:** one more table and one more process. Delivery is delayed by the relay's polling interval. Published rows accumulate and need pruning eventually.

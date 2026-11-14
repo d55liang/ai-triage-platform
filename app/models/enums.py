@@ -19,6 +19,10 @@ class WorkflowRunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class OutboxEventType(StrEnum):
+    TICKET_QUEUED = "ticket.queued"
+
+
 class RequiredInputType(StrEnum):
     # Lowercase to match JSON Schema, so a Required Input maps straight into a tool schema.
     STRING = "string"
