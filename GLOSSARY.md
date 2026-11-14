@@ -10,6 +10,10 @@ A platform where users describe what they need in natural language to an AI agen
 The natural-language exchange between a User and the Intake Agent from which Tickets are drawn. One Conversation can produce several Tickets.
 _Avoid_: Chat, session, thread
 
+**Message**:
+One entry in a Conversation, written by the User or by the Intake Agent.
+_Avoid_: Turn, chat, utterance
+
 **Intake Agent**:
 The AI agent the User talks to in a Conversation. It turns each distinct request into a Ticket, acts on existing Tickets (for example cancelling one) at the User's request, and asks the User for missing Required Inputs. It does not triage.
 _Avoid_: Bot, assistant, "the agent" (ambiguous once Triage runs separately)
@@ -20,25 +24,28 @@ _Avoid_: Issue, case, request, message
 
 **Ticket Status**:
 Where a Ticket is in its Triage lifecycle. Only the system changes it, except that a User may cancel.
-- **CREATED**: saved, not yet handed off for Triage.
-- **QUEUED**: waiting for Triage.
+- **QUEUED**: waiting for Triage. A new Ticket starts here.
 - **TRIAGING**: Triage is in progress.
 - **TRIAGED**: a Workflow Definition was selected and its Workflow Run created. The Ticket's lifecycle ends here; the work's progress is the Workflow Run's own status.
-- **UNMATCHED**: Triage finished, but no Workflow Definition met its Confidence Threshold.
+- **UNMATCHED**: Triage finished without a Workflow Definition that every Triage Provider selected. The Intake Agent asks the User to clarify, and the same Ticket is triaged again.
 - **FAILED**: Triage could not finish, even after retries.
 - **CANCELLED**: the User withdrew the Ticket. Cancelling a TRIAGED Ticket also cancels its Workflow Run; a Ticket whose Run is COMPLETED or FAILED can't be cancelled.
 
 A deleted Ticket no longer exists; deletion is not a status.
-_Avoid_: State, PENDING, COMPLETED, CLOSED
+_Avoid_: State, CREATED, PENDING, COMPLETED, CLOSED
 
 ### Triage
 
 **Triage**:
-Matching a Ticket to a Workflow Definition and creating its Workflow Run, which happens only when the Match Confidence meets that definition's Confidence Threshold. If no definition qualifies, the Ticket becomes UNMATCHED and the Intake Agent asks the User clarifying questions; if several qualify, the highest Match Confidence wins.
+Matching a Ticket to a Workflow Definition and creating its Workflow Run. Each Triage Provider selects the qualifying definition with its highest Match Confidence, where qualifying means meeting that definition's Confidence Threshold, and a Workflow Run is created only when every Triage Provider selected the same one. Otherwise the Ticket becomes UNMATCHED, the Intake Agent asks the User clarifying questions, and the Ticket is triaged again.
 _Avoid_: Routing, classification, assignment
 
+**Triage Provider**:
+One AI model that independently judges which Workflow Definition a Ticket belongs to. Triage consults several and needs them to agree.
+_Avoid_: Triage agent, model, judge
+
 **Match Confidence**:
-How sure Triage is that a Ticket belongs to a particular Workflow Definition.
+How sure a Triage Provider is, from 0 to 1, that a Ticket belongs to a particular Workflow Definition.
 _Avoid_: Score, probability, certainty
 
 **Confidence Threshold**:
