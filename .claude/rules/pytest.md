@@ -15,6 +15,12 @@ Rationale is in `DESIGN.md` §10.
 - `tests/conftest.py` hard-sets `os.environ["DATABASE_URL"]` before any `app` import, so Ruff's `E402` is ignored for that file only. Never use `setdefault`: a stray value in the shell or `.env` must not redirect tests.
 - Build the schema with `alembic upgrade head` in a session-scoped fixture. Never use `Base.metadata.create_all()`, which would pass even with a missing migration.
 
+## SQS
+
+- Tests use ElasticMQ from `docker-compose.yml` on `127.0.0.1:9324`. `tests/conftest.py` hard-sets `SQS_ENDPOINT_URL`, `TRIAGE_QUEUE_URL` and `AWS_REGION` next to `DATABASE_URL`, so no test can reach AWS.
+- The queue isn't rolled back with the database. Tests that send or receive use an autouse fixture that purges the queue before and after each test.
+- A test that commits for real must also delete the outbox events it wrote, or the relay tests will publish them.
+
 ## Writing tests
 
 - Test through HTTP with `TestClient`, using the real database and no mocks. Add repository or service tests only for logic HTTP can't reach.

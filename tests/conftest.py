@@ -2,6 +2,10 @@ import os
 
 # Hard-set, not setdefault: nothing in the shell or .env may point tests at Aurora.
 os.environ["DATABASE_URL"] = "postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test"
+# Likewise for SQS: ElasticMQ from docker-compose.yml, never AWS.
+os.environ["SQS_ENDPOINT_URL"] = "http://127.0.0.1:9324"
+os.environ["TRIAGE_QUEUE_URL"] = "http://127.0.0.1:9324/000000000000/triage"
+os.environ["AWS_REGION"] = "us-east-2"
 
 from collections.abc import Iterator
 from pathlib import Path
