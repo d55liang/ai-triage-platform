@@ -20,7 +20,6 @@ from app.repositories.workflow_run_repository import (
 # CANCELLED is included so a retried cancel succeeds. TRIAGED is cancellable because
 # cancelling also cancels the Ticket's Workflow Run.
 CANCELLABLE_STATUSES = [
-    TicketStatus.CREATED,
     TicketStatus.QUEUED,
     TicketStatus.TRIAGING,
     TicketStatus.TRIAGED,
@@ -43,7 +42,7 @@ def create_ticket(session: Session, user_id: str, message: str) -> Ticket:
         "ticket_id": ticket_id,
         "user_id": user_id,
         "message": message,
-        "status": TicketStatus.CREATED,
+        "status": TicketStatus.QUEUED,
     }
     return save_ticket(session, ticket)
 

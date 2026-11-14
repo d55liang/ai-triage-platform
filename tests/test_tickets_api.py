@@ -41,7 +41,7 @@ def test_create_ticket(client: TestClient) -> None:
 
     assert ticket["user_id"] == TICKET["user_id"]
     assert ticket["message"] == TICKET["message"]
-    assert ticket["status"] == TicketStatus.CREATED
+    assert ticket["status"] == TicketStatus.QUEUED
     assert ticket["created_at"] is not None
 
 
@@ -111,7 +111,6 @@ def test_delete_ticket(client: TestClient) -> None:
 @pytest.mark.parametrize(
     "status",
     [
-        TicketStatus.CREATED,
         TicketStatus.QUEUED,
         TicketStatus.TRIAGING,
         TicketStatus.UNMATCHED,

@@ -88,7 +88,6 @@ def test_create_run_without_required_inputs_is_ready(client: TestClient, session
 @pytest.mark.parametrize(
     "status",
     [
-        TicketStatus.CREATED,
         TicketStatus.QUEUED,
         TicketStatus.UNMATCHED,
         TicketStatus.FAILED,
