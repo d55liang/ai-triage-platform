@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, TypedDict
 from uuid import UUID, uuid4
 
@@ -27,10 +27,16 @@ INPUT_TYPES: dict[RequiredInputType, object] = {
 }
 
 
-def create_workflow_run(session: Session, ticket_id: UUID, version_id: UUID) -> WorkflowRun:
+def create_workflow_run(
+    session: Session, ticket_id: UUID, version_id: UUID, claimed_at: datetime
+) -> WorkflowRun:
     # Called by Triage. The caller owns the transaction, so if any step raises,
     # the Ticket stays TRIAGING and no Run is saved.
-    modify_ticket_status(session, ticket_id, [TicketStatus.TRIAGING], TicketStatus.TRIAGED)
+    # claimed_at is required: only the worker whose claim is still current may create the Run,
+    # so a slow worker whose lease was taken over gets ValueError, as for a cancelled Ticket.
+    modify_ticket_status(
+        session, ticket_id, [TicketStatus.TRIAGING], TicketStatus.TRIAGED, claimed_at=claimed_at
+    )
     # A plain read is enough: a disable that commits after it is the same as disabling
     # just after the Run was created, which only stops new selections.
     definition, version = fetch_workflow_definition_version_by_id(session, version_id)

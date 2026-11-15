@@ -1,5 +1,6 @@
 """Workflow Run tests. Only Triage creates Runs, so creation tests call the service directly."""
 
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.enums import TicketStatus, WorkflowRunStatus
 from app.models.orm import Ticket, WorkflowRun
+from app.services.triage_service import claim_ticket
 from app.services.workflow_run_service import create_workflow_run
 
 TICKET = {"user_id": "user-1", "message": "My laptop died, I need a new one"}
@@ -27,13 +29,20 @@ def create_triaging_ticket(client: TestClient, session: Session) -> UUID:
     response = client.post("/api/tickets", json=TICKET)
     assert response.status_code == 201
     ticket_id = UUID(response.json()["ticket_id"])
-    set_status(session, ticket_id, TicketStatus.TRIAGING)
+    # A real claim, so the Ticket has the claimed_at a Triage worker would hold.
+    assert claim_ticket(session, ticket_id) is not None
     return ticket_id
 
 
 def set_status(session: Session, ticket_id: UUID, status: TicketStatus) -> None:
-    """No Triage worker exists yet, so tests set the Ticket Status directly."""
+    """No Triage worker exists yet, so tests set the other Ticket Statuses directly."""
     session.get(Ticket, ticket_id).status = status
+    session.flush()
+
+
+def set_claimed_at(session: Session, ticket_id: UUID, claimed_at: datetime) -> None:
+    """now() is fixed inside a test's transaction, so an expired lease is set by hand."""
+    session.get(Ticket, ticket_id).claimed_at = claimed_at
     session.flush()
 
 
@@ -51,11 +60,16 @@ def create_definition(client: TestClient, **overrides: object) -> tuple[UUID, UU
     return UUID(definition["definition_id"]), UUID(definition["current_version"]["version_id"])
 
 
-def create_run(session: Session, ticket_id: UUID, version_id: UUID) -> WorkflowRun:
+def create_run(
+    session: Session, ticket_id: UUID, version_id: UUID, claimed_at: datetime | None = None
+) -> WorkflowRun:
+    """Uses the Ticket's current claim, as the worker holding it would, unless a token is given."""
+    if claimed_at is None:
+        claimed_at = session.get(Ticket, ticket_id).claimed_at
     # The savepoint stands in for Triage's transaction: on an error it undoes this call only,
     # so a test can check that the Ticket Status change was rolled back too.
     with session.begin_nested():
-        return create_workflow_run(session, ticket_id, version_id)
+        return create_workflow_run(session, ticket_id, version_id, claimed_at)
 
 
 def get_runs(session: Session, ticket_id: UUID) -> list[WorkflowRun]:
@@ -124,7 +138,37 @@ def test_create_run_for_missing_ticket(client: TestClient, session: Session) -> 
     _, version_id = create_definition(client)
 
     with pytest.raises(KeyError):
-        create_run(session, uuid4(), version_id)
+        create_run(session, uuid4(), version_id, claimed_at=datetime.now(UTC))
+
+
+def test_create_run_with_stale_claim_rolls_back(client: TestClient, session: Session) -> None:
+    ticket_id = create_triaging_ticket(client, session)
+    _, version_id = create_definition(client)
+    current = session.get(Ticket, ticket_id).claimed_at
+
+    # A worker whose lease was taken over still holds the older token.
+    with pytest.raises(ValueError):
+        create_run(session, ticket_id, version_id, claimed_at=current - timedelta(seconds=60))
+
+    assert get_runs(session, ticket_id) == []
+    assert get_ticket_status(client, ticket_id) == TicketStatus.TRIAGING
+
+
+def test_create_run_after_lease_takeover_uses_new_claim(
+    client: TestClient, session: Session
+) -> None:
+    ticket_id = create_triaging_ticket(client, session)
+    _, version_id = create_definition(client)
+    old = session.get(Ticket, ticket_id).claimed_at - timedelta(seconds=60)
+    set_claimed_at(session, ticket_id, old)
+    assert claim_ticket(session, ticket_id) is not None
+
+    with pytest.raises(ValueError):
+        create_run(session, ticket_id, version_id, claimed_at=old)
+    run = create_run(session, ticket_id, version_id)
+
+    assert get_runs(session, ticket_id) == [run]
+    assert get_ticket_status(client, ticket_id) == TicketStatus.TRIAGED
 
 
 def test_create_run_for_missing_version_rolls_back(client: TestClient, session: Session) -> None:
