@@ -51,6 +51,7 @@ tests/
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
+  test_triage_service.py  Triage steps (claim, release) called directly, since no worker exists yet
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests

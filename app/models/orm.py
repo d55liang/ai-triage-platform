@@ -35,6 +35,8 @@ class Ticket(Base):
         )
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # When a Triage worker last claimed the Ticket: the lease's start and the claim's fencing token.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class WorkflowDefinition(Base):

@@ -1,6 +1,7 @@
+from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,17 +58,45 @@ def modify_ticket(session: Session, ticket_id: UUID, params: dict) -> Ticket:
 
 
 def modify_ticket_status(
-    session: Session, ticket_id: UUID, expected: list[TicketStatus], status: TicketStatus
+    session: Session,
+    ticket_id: UUID,
+    expected: list[TicketStatus],
+    status: TicketStatus,
+    claimed_at: datetime | None = None,
 ) -> Ticket:
     # Compare-and-set: checking the status in the UPDATE stops a concurrent change being overwritten.
+    conditions = [Ticket.ticket_id == ticket_id, Ticket.status.in_(expected)]
+    if claimed_at is not None:
+        # Fencing: only the worker whose claim is still current may move the Ticket on.
+        conditions.append(Ticket.claimed_at == claimed_at)
     ticket = session.scalars(
-        update(Ticket)
-        .where(Ticket.ticket_id == ticket_id, Ticket.status.in_(expected))
-        .values(status=status)
-        .returning(Ticket)
+        update(Ticket).where(*conditions).values(status=status).returning(Ticket)
     ).one_or_none()
     if ticket is None:
         # No row matched: fetch_ticket raises KeyError if it's missing, so past it the status is the problem.
         fetch_ticket(session, ticket_id)
         raise ValueError(ticket_id)
     return ticket
+
+
+def modify_ticket_claim(session: Session, ticket_id: UUID, lease: timedelta) -> datetime | None:
+    """Claims a QUEUED Ticket, or a TRIAGING one whose lease has expired; returns the new claimed_at.
+
+    Returns None instead of raising: for a worker, no match is a normal outcome (a duplicate
+    delivery, or a Ticket cancelled, finished or deleted), and every case means the same: stop.
+    """
+    return session.scalars(
+        update(Ticket)
+        .where(
+            Ticket.ticket_id == ticket_id,
+            or_(
+                Ticket.status == TicketStatus.QUEUED,
+                and_(
+                    Ticket.status == TicketStatus.TRIAGING,
+                    Ticket.claimed_at < func.now() - lease,
+                ),
+            ),
+        )
+        .values(status=TicketStatus.TRIAGING, claimed_at=func.now())
+        .returning(Ticket.claimed_at)
+    ).one_or_none()
