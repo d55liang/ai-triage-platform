@@ -41,9 +41,11 @@ app/
   models/response.py      Pydantic response bodies
   models/orm.py           SQLAlchemy table models
   models/enums.py         StrEnums shared by API and table models (TicketStatus, OutboxEventType, RequiredInputType)
+  models/triage.py        What a Triage Provider receives and returns (Candidate, MatchResult)
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
+  providers/              TriageProvider Protocol; the SDK adapters come in PR 3
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
   conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
@@ -51,7 +53,7 @@ tests/
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
-  test_triage_service.py  Triage steps (claim, release) called directly, since no worker exists yet
+  test_triage_service.py  Triage steps (claim, release, scoring with fake providers) called directly, since no worker exists yet
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests

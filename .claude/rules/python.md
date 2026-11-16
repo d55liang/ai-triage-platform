@@ -14,6 +14,7 @@ paths:
 - Never use a mutable default argument (`def f(x: list = [])`); use `None` and create the value inside.
 - Read configuration from environment variables (loaded from `.env` via `python-dotenv`); never hard-code secrets, ARNs or hosts. The one exception is the loopback test database URL in `tests/conftest.py`, which holds no secret.
 - Use f-strings for formatting, but **never** to build SQL with values (see `postgres.md`).
+- Code is synchronous except Triage scoring (`score_ticket` and `TriageProvider.score`, `DESIGN.md` §18). Inside `async def`, await async clients only, never a blocking call: it would stall the event loop, and `asyncio.timeout` couldn't cancel it. Run concurrent calls in an `asyncio.TaskGroup`, not `gather`, so a failure cancels the rest.
 - Docstrings only where the *why* isn't obvious; keep them to one or two lines.
 - Code must pass `ruff check .` and `ruff format --check .` (see `ruff.md`).
 - Pin dependency versions in `requirements.txt` when adding new ones. Dev tools go in the same file for now.
