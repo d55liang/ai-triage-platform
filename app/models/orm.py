@@ -37,6 +37,8 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # When a Triage worker last claimed the Ticket: the lease's start and the claim's fencing token.
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # How many times Triage has finished an attempt; numbers the attempt's triage_results.
+    triage_attempts: Mapped[int] = mapped_column(server_default=text("0"))
 
 
 class WorkflowDefinition(Base):
@@ -148,3 +150,30 @@ class OutboxEvent(Base):
     payload: Mapped[dict[str, str]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TriageResult(Base):
+    """One Triage Provider's Match Confidence for one candidate in one attempt: every score."""
+
+    __tablename__ = "triage_results"
+    __table_args__ = (
+        CheckConstraint(
+            "match_confidence >= 0 AND match_confidence <= 1", name="match_confidence_range"
+        ),
+    )
+
+    result_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    # CASCADE, unlike a Run: a score means nothing without its Ticket, and deleting the Ticket is
+    # the User's own choice.
+    ticket_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tickets.ticket_id", ondelete="CASCADE"), index=True
+    )
+    attempt: Mapped[int]
+    provider: Mapped[str] = mapped_column(String(50))
+    model: Mapped[str] = mapped_column(String(100))
+    # The version that was scored, threshold included; versions are never deleted.
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("workflow_definition_versions.version_id", ondelete="RESTRICT"), index=True
+    )
+    match_confidence: Mapped[Decimal] = mapped_column(Numeric(3, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -13,17 +13,24 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.models.enums import TicketStatus
-from app.models.orm import Ticket, WorkflowDefinition, WorkflowDefinitionVersion
+from app.models.orm import (
+    Ticket,
+    TriageResult,
+    WorkflowDefinition,
+    WorkflowDefinitionVersion,
+    WorkflowRun,
+)
 from app.models.triage import Candidate, MatchResult
 from app.repositories.workflow_definition_repository import DefinitionWithVersion
 from app.services.triage_service import (
     Claim,
     ProviderScores,
     claim_ticket,
+    finish_triage,
     release_claim,
     score_ticket,
 )
@@ -322,3 +329,249 @@ def test_match_confidence_is_rounded_to_two_places() -> None:
     result = MatchResult(version_id=uuid4(), match_confidence=Decimal("0.795"))
 
     assert result.match_confidence == Decimal("0.80")
+
+
+def test_score_without_providers_is_rejected() -> None:
+    # A misconfigured worker must fail loudly, not turn every Ticket UNMATCHED.
+    with pytest.raises(ValueError):
+        score([], [make_candidate("laptop")])
+
+
+# Finishing. Scores are built by hand from a real claim's candidates: finish_triage calls no
+# provider.
+
+
+def claim_with_definitions(client: TestClient, session: Session, *names: str) -> Claim:
+    for name in names:
+        create_definition(client, name)
+    claim = claim_ticket(session, create_ticket(client))
+    assert claim is not None
+    return claim
+
+
+def version_of(claim: Claim, name: str) -> UUID:
+    return next(
+        version.version_id for definition, version in claim.candidates if definition.name == name
+    )
+
+
+def scores_for(provider: str, claim: Claim, confidences: dict[str, str]) -> ProviderScores:
+    """Scores every candidate: the named ones as given, the rest at 0.10."""
+    scores = [
+        MatchResult(
+            version_id=version.version_id,
+            match_confidence=Decimal(confidences.get(definition.name, "0.10")),
+        )
+        for definition, version in claim.candidates
+    ]
+    return ProviderScores(provider, f"{provider}-model", scores)
+
+
+def finish(session: Session, claim: Claim, scores: list[ProviderScores]) -> TicketStatus | None:
+    # The savepoint stands in for the worker's transaction, so a failure undoes only this call.
+    with session.begin_nested():
+        return finish_triage(session, claim, scores)
+
+
+def get_results(session: Session, ticket_id: UUID) -> list[TriageResult]:
+    return list(session.scalars(select(TriageResult).where(TriageResult.ticket_id == ticket_id)))
+
+
+def get_runs(session: Session, ticket_id: UUID) -> list[WorkflowRun]:
+    return list(session.scalars(select(WorkflowRun).where(WorkflowRun.ticket_id == ticket_id)))
+
+
+def get_attempts(session: Session, ticket_id: UUID) -> int:
+    return session.scalar(select(Ticket.triage_attempts).where(Ticket.ticket_id == ticket_id))
+
+
+def test_agreement_creates_run(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop", "monitor")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.92"}),
+        scores_for("gemini", claim, {"laptop": "0.85"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.TRIAGED
+
+    runs = get_runs(session, claim.ticket_id)
+    assert [run.version_id for run in runs] == [version_of(claim, "laptop")]
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.TRIAGED
+
+
+def test_disagreement_is_unmatched(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop", "monitor")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.92"}),
+        scores_for("gemini", claim, {"monitor": "0.85"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.UNMATCHED
+
+    assert get_runs(session, claim.ticket_id) == []
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.UNMATCHED
+
+
+def test_one_provider_below_threshold_is_unmatched(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.92"}),
+        scores_for("gemini", claim, {"laptop": "0.79"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.UNMATCHED
+
+
+def test_score_at_threshold_matches(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.80"}),
+        scores_for("gemini", claim, {"laptop": "0.80"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.TRIAGED
+
+
+def test_tie_within_one_provider_is_unmatched(client: TestClient, session: Session) -> None:
+    # The other provider picks laptop, but a tie means this one picked nothing.
+    claim = claim_with_definitions(client, session, "laptop", "monitor")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.90", "monitor": "0.90"}),
+        scores_for("gemini", claim, {"laptop": "0.90"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.UNMATCHED
+
+
+def test_no_scores_is_unmatched(client: TestClient, session: Session) -> None:
+    # What score_ticket returns when no definition is enabled.
+    claim = claim_with_definitions(client, session)
+
+    assert finish(session, claim, []) == TicketStatus.UNMATCHED
+    assert get_attempts(session, claim.ticket_id) == 1
+
+
+def test_every_score_is_stored(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop", "monitor")
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.92"}),
+        scores_for("gemini", claim, {"monitor": "0.85"}),
+    ]
+
+    finish(session, claim, scores)
+
+    stored = {
+        (r.attempt, r.provider, r.model, r.version_id, r.match_confidence)
+        for r in get_results(session, claim.ticket_id)
+    }
+    assert stored == {
+        (1, "anthropic", "anthropic-model", version_of(claim, "laptop"), Decimal("0.92")),
+        (1, "anthropic", "anthropic-model", version_of(claim, "monitor"), Decimal("0.10")),
+        (1, "gemini", "gemini-model", version_of(claim, "laptop"), Decimal("0.10")),
+        (1, "gemini", "gemini-model", version_of(claim, "monitor"), Decimal("0.85")),
+    }
+
+
+def test_second_attempt_is_numbered(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    finish(session, claim, [scores_for("anthropic", claim, {})])
+    # Queued again, as clarifying an UNMATCHED Ticket will do.
+    session.get(Ticket, claim.ticket_id).status = TicketStatus.QUEUED
+    session.flush()
+    second = claim_ticket(session, claim.ticket_id)
+
+    finish(session, second, [scores_for("anthropic", second, {})])
+
+    assert sorted(r.attempt for r in get_results(session, claim.ticket_id)) == [1, 2]
+    assert get_attempts(session, claim.ticket_id) == 2
+
+
+def test_run_pins_scored_version_after_publish(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    definition_id = claim.candidates[0][0].definition_id
+    # Version 2 raises the threshold above the scores, but the decision uses what was scored.
+    content = {k: v for k, v in WORKFLOW_DEFINITION.items() if k != "name"}
+    response = client.post(
+        f"/api/workflow-definitions/{definition_id}/versions",
+        json={**content, "confidence_threshold": "0.99", "base_version": 1},
+    )
+    assert response.status_code == 201
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.90"}),
+        scores_for("gemini", claim, {"laptop": "0.90"}),
+    ]
+
+    assert finish(session, claim, scores) == TicketStatus.TRIAGED
+    assert [run.version_id for run in get_runs(session, claim.ticket_id)] == [
+        version_of(claim, "laptop")
+    ]
+
+
+def test_finish_after_takeover_returns_none(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    stale = expire_claim(session, claim)
+    assert claim_ticket(session, claim.ticket_id) is not None
+    scores = [scores_for("anthropic", stale, {"laptop": "0.90"})]
+
+    assert finish(session, stale, scores) is None
+
+    assert get_results(session, claim.ticket_id) == []
+    assert get_runs(session, claim.ticket_id) == []
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.TRIAGING
+
+
+def test_finish_after_cancel_returns_none(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    assert client.post(f"/api/tickets/{claim.ticket_id}/cancel").status_code == 200
+
+    assert finish(session, claim, [scores_for("anthropic", claim, {"laptop": "0.90"})]) is None
+
+    assert get_results(session, claim.ticket_id) == []
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.CANCELLED
+
+
+def test_disabled_during_scoring_rolls_back(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    definition_id = claim.candidates[0][0].definition_id
+    assert client.post(f"/api/workflow-definitions/{definition_id}/disable").status_code == 200
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.90"}),
+        scores_for("gemini", claim, {"laptop": "0.90"}),
+    ]
+
+    # ValueError means retry: the worker releases its claim and SQS redelivers.
+    with pytest.raises(ValueError):
+        finish(session, claim, scores)
+
+    assert get_results(session, claim.ticket_id) == []
+    assert get_attempts(session, claim.ticket_id) == 0
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.TRIAGING
+
+
+def test_retry_after_disabled_definition_requeues(client: TestClient, session: Session) -> None:
+    # The worker's sequence: the failed finish rolls back, then a separate release hands the
+    # Ticket back for the redelivery to claim.
+    claim = claim_with_definitions(client, session, "laptop")
+    definition_id = claim.candidates[0][0].definition_id
+    assert client.post(f"/api/workflow-definitions/{definition_id}/disable").status_code == 200
+    scores = [
+        scores_for("anthropic", claim, {"laptop": "0.90"}),
+        scores_for("gemini", claim, {"laptop": "0.90"}),
+    ]
+    with pytest.raises(ValueError):
+        finish(session, claim, scores)
+
+    release_claim(session, claim)
+
+    assert get_ticket_status(client, claim.ticket_id) == TicketStatus.QUEUED
+    assert claim_ticket(session, claim.ticket_id) is not None
+
+
+def test_deleting_unmatched_ticket_deletes_its_scores(client: TestClient, session: Session) -> None:
+    claim = claim_with_definitions(client, session, "laptop")
+    finish(session, claim, [scores_for("anthropic", claim, {})])
+    assert get_results(session, claim.ticket_id) != []
+
+    assert client.delete(f"/api/tickets/{claim.ticket_id}").status_code == 200
+
+    assert get_results(session, claim.ticket_id) == []

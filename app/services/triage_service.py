@@ -2,7 +2,8 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from uuid import UUID
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -11,13 +12,16 @@ from app.models.triage import Candidate, MatchResult
 from app.providers.triage_provider import TriageProvider
 from app.repositories.ticket_repository import (
     fetch_ticket,
+    modify_ticket_attempts,
     modify_ticket_claim,
     modify_ticket_status,
 )
+from app.repositories.triage_result_repository import save_triage_results
 from app.repositories.workflow_definition_repository import (
     DefinitionWithVersion,
     fetch_enabled_workflow_definitions,
 )
+from app.services.workflow_run_service import create_workflow_run
 
 # Longer than one attempt (providers in parallel, 20 s timeout) and shorter than the queue's 60 s
 # visibility timeout, so the first redelivery after a crash can take the Ticket over.
@@ -85,6 +89,9 @@ async def score_ticket(
     calls. Raises TimeoutError, an ExceptionGroup of provider errors, or ValueError for output that
     doesn't score each candidate exactly once.
     """
+    if not providers:
+        # Otherwise a misconfigured worker would quietly make every Ticket UNMATCHED.
+        raise ValueError("no Triage Providers configured")
     if not candidates:
         return []
     visible = [
@@ -110,3 +117,62 @@ async def score_ticket(
             raise ValueError(f"{provider.name} did not score each candidate exactly once")
         results.append(ProviderScores(provider.name, provider.model, scores))
     return results
+
+
+def _select_version(scores: list[MatchResult], thresholds: dict[UUID, Decimal]) -> UUID | None:
+    """One provider's choice: its highest score that meets that version's threshold, if unique."""
+    qualifying = [s for s in scores if s.match_confidence >= thresholds[s.version_id]]
+    if not qualifying:
+        return None
+    top = max(s.match_confidence for s in qualifying)
+    best = [s.version_id for s in qualifying if s.match_confidence == top]
+    # A tie is ambiguity, which is what UNMATCHED is for.
+    return best[0] if len(best) == 1 else None
+
+
+def finish_triage(
+    session: Session, claim: Claim, scores: list[ProviderScores]
+) -> TicketStatus | None:
+    """Stores every score, then creates the Run if every provider chose the same version.
+
+    Returns None if the claim was lost (cancelled or taken over): stop. Raises ValueError if the
+    chosen definition was disabled during scoring: release the claim and retry.
+    """
+    # First, so a lost claim is found before anything is written. The update also holds the
+    # Ticket's row lock until commit, so create_workflow_run's own fenced check can't fail on
+    # ownership: its ValueError can only mean a disabled definition.
+    attempt = modify_ticket_attempts(session, claim.ticket_id, claim.claimed_at)
+    if attempt is None:
+        return None
+    save_triage_results(
+        session,
+        [
+            {
+                "result_id": uuid4(),
+                "ticket_id": claim.ticket_id,
+                "attempt": attempt,
+                "provider": provider_scores.provider,
+                "model": provider_scores.model,
+                "version_id": score.version_id,
+                "match_confidence": score.match_confidence,
+            }
+            for provider_scores in scores
+            for score in provider_scores.scores
+        ],
+    )
+    # Thresholds as they were at claim time, the same versions the providers scored.
+    thresholds = {
+        version.version_id: version.confidence_threshold for _, version in claim.candidates
+    }
+    selections = {_select_version(p.scores, thresholds) for p in scores}
+    if len(selections) == 1 and None not in selections:
+        create_workflow_run(session, claim.ticket_id, selections.pop(), claim.claimed_at)
+        return TicketStatus.TRIAGED
+    modify_ticket_status(
+        session,
+        claim.ticket_id,
+        [TicketStatus.TRIAGING],
+        TicketStatus.UNMATCHED,
+        claimed_at=claim.claimed_at,
+    )
+    return TicketStatus.UNMATCHED

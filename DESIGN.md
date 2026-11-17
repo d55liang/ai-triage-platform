@@ -520,7 +520,7 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 Status: **in progress** (PR 1 merged, PR 2 on `feat/triage-decision`), to be built before Conversation (§19), in four PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
 1. **Outbox (built):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
-2. **Triage decision:** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 3.
+2. **Triage decision (built):** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 3.
 3. **Workers and providers:** the triage worker loop, the DLQ consumer, and the Anthropic and Gemini adapters, with their dependencies, rules files and env vars documented.
 4. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
 
@@ -553,7 +553,7 @@ outbox_events
 
 triage_results                 one row per Triage Provider × candidate × attempt: every score
   result_id         UUID PK
-  ticket_id         UUID FK    indexed; ON DELETE RESTRICT
+  ticket_id         UUID FK    indexed; ON DELETE CASCADE: a score means nothing without its Ticket
   attempt           INTEGER    the Ticket's triage_attempts at the time
   provider          VARCHAR    e.g. anthropic, gemini
   model             VARCHAR    the exact model ID
@@ -622,7 +622,12 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
     - **Rejected: threads.** A `ThreadPoolExecutor` needs no async code, but Python can't stop a thread: a timed-out call keeps running, so the pool has to abandon it (`shutdown(wait=False)`; a `with` block would wait for it) and rely on the SDK's own timeout to end it eventually. Rejected too: making the whole app async, which would rewrite every session, repository, route and test for no gain at a connection pool of two.
     - **Trap:** cancellation only happens at an `await`. An adapter that called a sync SDK method inside `async def score` would block the loop, and the timeout could no longer interrupt it. Adapters use the async clients only.
     - **Errors arrive as a group.** A `TaskGroup` raises an `ExceptionGroup` holding every provider's error; the worker treats it like any other failed attempt. A timeout raises `TimeoutError`.
-  - `finish_triage(session, claim, scores) -> TicketStatus`: tx2, saves the scores, increments `triage_attempts`, applies thresholds, ties and consensus, then `create_workflow_run(..., claimed_at)` or a fenced TRIAGING → UNMATCHED.
+  - `finish_triage(session, claim, scores) -> TicketStatus | None`: tx2. A fenced `UPDATE ... SET triage_attempts = triage_attempts + 1 ... RETURNING` comes first; then every score is saved with that attempt number; then each provider's choice and the consensus decide between `create_workflow_run(..., claimed_at)` and a fenced TRIAGING → UNMATCHED.
+    - **None means stop, ValueError means retry.** `create_workflow_run` raises `ValueError` both for a lost claim and for a definition disabled during scoring, which need opposite handling. Doing the fenced increment first separates them: no row means the claim was lost (cancelled, deleted or taken over), so `finish_triage` returns `None`, writes nothing, and the worker deletes its message. A matching row holds the Ticket's lock until commit, so no cancel or takeover can come between it and `create_workflow_run`, whose `ValueError` can then only mean a disabled definition: the transaction rolls back (scores and the attempt count included), and the worker releases its claim for a retry. Locks are still taken Ticket first, then Run, as in cancelling.
+    - **Thresholds come from the claim.** Each provider's choice uses the thresholds of the versions it scored, read at claim time, so an Admin publishing a new version during scoring can't change the decision, and the Run pins the scored version.
+    - **A provider's choice** is its highest score at or above that version's threshold; none qualifying, or two tied at the top, means no choice. A Run needs every provider to make the same choice; no scores at all (no enabled definitions) is UNMATCHED.
+    - **No providers is an error.** `score_ticket` raises `ValueError` when given none, because an empty result would otherwise make every Ticket UNMATCHED without anyone noticing.
+    - **Deleting a scored Ticket** removes its scores (`ON DELETE CASCADE`). Runs stay `RESTRICT`: they are work in progress, while scores only describe how a Ticket was triaged, and deleting the Ticket is the User's own choice.
   - `release_claim(session, claim)`: a fenced TRIAGING → QUEUED.
 
   Providers are passed in as an argument; the worker in PR 3 builds them from `TRIAGE_PROVIDERS`.
@@ -678,6 +683,7 @@ POST /api/tickets and PATCH /api/tickets/{id} are removed: Tickets change only t
 
 - There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
+- The three Triage transactions (claim, score with no transaction open, finish) are tested inside one rollback transaction. Checked once by hand with real commits: the `Claim`'s candidates stayed readable after tx1 committed (`expire_on_commit=False`), finishing created the Run on the scored version, and deleting the Ticket removed its scores.
 - Concurrent claims have no automated test either. Checked by hand: eight threads, each on its own connection, claimed one committed QUEUED Ticket at once, and exactly one got a claim (§18).
 - Concurrent Required Input submissions have no automated test either, for the same reason. Checked by hand: the second `UPDATE` waited for the first to commit, and the Run kept both values (§17).
 - The test session is shared by every request in a test, so a request that fails after writing could leave a stale object in its cache: the savepoint rolls back the database, but an object refreshed by `UPDATE ... RETURNING` isn't expired with it. The override in `tests/conftest.py` expires the session after a failed request, as a fresh production session would never see the stale object. Found when a cancel that returned 409 still read back as CANCELLED.

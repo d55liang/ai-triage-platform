@@ -100,3 +100,18 @@ def modify_ticket_claim(session: Session, ticket_id: UUID, lease: timedelta) -> 
         .values(status=TicketStatus.TRIAGING, claimed_at=func.now())
         .returning(Ticket.claimed_at)
     ).one_or_none()
+
+
+def modify_ticket_attempts(session: Session, ticket_id: UUID, claimed_at: datetime) -> int | None:
+    """Counts a finished attempt, fenced by the claim; returns its number, or None if the claim
+    was lost (the Ticket was cancelled, deleted or taken over by another worker)."""
+    return session.scalars(
+        update(Ticket)
+        .where(
+            Ticket.ticket_id == ticket_id,
+            Ticket.status == TicketStatus.TRIAGING,
+            Ticket.claimed_at == claimed_at,
+        )
+        .values(triage_attempts=Ticket.triage_attempts + 1)
+        .returning(Ticket.triage_attempts)
+    ).one_or_none()
