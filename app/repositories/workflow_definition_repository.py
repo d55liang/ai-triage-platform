@@ -76,8 +76,14 @@ def fetch_all_workflow_definitions(
 
 
 def fetch_enabled_workflow_definitions(session: Session) -> list[DefinitionWithVersion]:
-    """Triage's candidates: every enabled definition with its current version."""
-    statement = _select_with_current_version().where(WorkflowDefinition.is_enabled)
+    """Triage's candidates: every enabled definition with its current version, by name."""
+    # A stable order keeps the score schema identical between Tickets, so providers can reuse
+    # their compiled schema, and keeps prompts reproducible.
+    statement = (
+        _select_with_current_version()
+        .where(WorkflowDefinition.is_enabled)
+        .order_by(WorkflowDefinition.name)
+    )
     return list(session.execute(statement))
 
 

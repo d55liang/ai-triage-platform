@@ -26,6 +26,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Tests | pytest, httpx2 (`TestClient`) | |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) | |
 | Queue | Amazon SQS through `boto3`, fed by a transactional outbox; ElasticMQ in Docker locally and in CI | Queues in AWS (need approval) |
+| Triage Providers | Anthropic API through `anthropic` and Gemini API through `google-genai` (async clients, structured outputs) | |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -45,7 +46,7 @@ app/
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
-  providers/              TriageProvider Protocol; the SDK adapters come in PR 3
+  providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py, gemini_provider.py); factory.py: build_providers() from TRIAGE_PROVIDERS
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
   conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
@@ -54,6 +55,10 @@ tests/
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
   test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly, since no worker exists yet
+  test_triage_prompt.py   The shared prompt, score schema and answer parsing; pure, no database
+  test_anthropic_provider.py  The Anthropic adapter's request and answer handling; one live call marked llm
+  test_gemini_provider.py  The Gemini adapter's config and answer handling; one live call marked llm
+  test_provider_factory.py  Building providers from TRIAGE_PROVIDERS; no API calls
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
@@ -90,6 +95,7 @@ ruff format .            # format; add --check to verify without writing
 docker compose up -d     # start the local test database and ElasticMQ (Docker must be running)
 pytest                   # run the local tests; never touches Aurora
 pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
+pytest -m llm            # run the live Triage Provider tests deliberately; costs a little
 ```
 
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
@@ -102,10 +108,14 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 `TRIAGE_QUEUE_URL` is required by anything that imports `app/queue.py` (the relay; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324` and `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage`. `tests/conftest.py` always sets both, and `AWS_REGION`.
 
+`ANTHROPIC_API_KEY` and `GEMINI_API_KEY` are read by each SDK itself when `AnthropicProvider` or `GeminiProvider` is built; only the triage worker and `pytest -m llm` need them. `GeminiProvider` raises without its key, and `GOOGLE_API_KEY`, if set, takes priority over `GEMINI_API_KEY`.
+
+`TRIAGE_PROVIDERS` is required by `build_providers()` (the triage worker, PR 4): a comma-separated list of provider names, e.g. `anthropic,gemini`, or one name to run with a single key locally. An empty list, an unknown name or a repeat raises `ValueError`.
+
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone.
-- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in four PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (built on `feat/triage-decision`, PR not opened yet); the workers and the Anthropic and Gemini adapters; AWS queues and IAM.
+- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in five PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (merged); the Anthropic and Gemini Triage Providers (in progress on `feat/triage-providers`); the triage worker and DLQ consumer; AWS queues and IAM.
 - **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); then an offline labelled evaluation set that measures each Triage Provider's accuracy.
 
 Update this section when a milestone starts or lands.

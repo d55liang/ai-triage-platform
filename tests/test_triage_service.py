@@ -100,6 +100,18 @@ def test_claim_includes_only_enabled_definitions(client: TestClient, session: Se
     assert disabled_id not in candidate_ids
 
 
+def test_claim_lists_candidates_by_name(client: TestClient, session: Session) -> None:
+    # Created out of order, so insertion order alone can't pass the test.
+    for name in ["Monitor Request", "Keyboard Request", "Laptop Request"]:
+        create_definition(client, name)
+    ticket_id = create_ticket(client)
+
+    claim = claim_ticket(session, ticket_id)
+
+    names = [definition.name for definition, _ in claim.candidates]
+    assert names == ["Keyboard Request", "Laptop Request", "Monitor Request"]
+
+
 def test_claim_is_given_once(client: TestClient, session: Session) -> None:
     ticket_id = create_ticket(client)
     claim_ticket(session, ticket_id)
