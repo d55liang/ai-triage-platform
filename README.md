@@ -47,9 +47,10 @@ TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
 
 Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need either variable.
 
-Triage Providers need their API keys:
+Triage Providers need their API keys, and `TRIAGE_PROVIDERS` chooses which ones run (one name, such as `anthropic`, needs only that provider's key):
 
 ```bash
+TRIAGE_PROVIDERS=anthropic,gemini
 ANTHROPIC_API_KEY=<key from the Claude Console>
 GEMINI_API_KEY=<key from Google AI Studio>
 ```

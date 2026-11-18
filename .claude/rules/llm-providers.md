@@ -29,6 +29,11 @@ Rationale is in `DESIGN.md` §18 (*Triage Provider adapters*).
 - Parse with `parse_scores`, which reads numbers as `Decimal` and validates each `MatchResult`. Which candidates were scored is checked by `score_ticket`.
 - Let SDK exceptions propagate unchanged; `score_ticket` collects them into an `ExceptionGroup`.
 
+## Registering a provider
+
+- Add the adapter class to `PROVIDERS` in `app/providers/factory.py`. Its `name` is both the value used in `TRIAGE_PROVIDERS` and the provider stored with every score.
+- Build providers only through `build_providers()`, once per process, and reuse them.
+
 ## Models
 
 - Model IDs are constants in each adapter (`claude-haiku-5-5`, `gemini-3.5-flash-lite`) and are stored with every score. Use the exact ID with no date suffix.
