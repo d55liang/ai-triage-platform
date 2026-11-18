@@ -26,6 +26,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Tests | pytest, httpx2 (`TestClient`) | |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) | |
 | Queue | Amazon SQS through `boto3`, fed by a transactional outbox; ElasticMQ in Docker locally and in CI | Queues in AWS (need approval) |
+| Triage Providers | Anthropic API through `anthropic` (async client, structured outputs) | Gemini through `google-genai` |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -45,7 +46,7 @@ app/
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
-  providers/              TriageProvider Protocol; the SDK adapters come in PR 3
+  providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py)
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
   conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
@@ -54,6 +55,8 @@ tests/
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
   test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly, since no worker exists yet
+  test_triage_prompt.py   The shared prompt, score schema and answer parsing; pure, no database
+  test_anthropic_provider.py  The Anthropic adapter's request and answer handling; one live call marked llm
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
@@ -90,6 +93,7 @@ ruff format .            # format; add --check to verify without writing
 docker compose up -d     # start the local test database and ElasticMQ (Docker must be running)
 pytest                   # run the local tests; never touches Aurora
 pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
+pytest -m llm            # run the live Triage Provider tests deliberately; costs a little
 ```
 
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
@@ -101,6 +105,8 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 `DATABASE_URL` is optional and selects a plain engine instead of the IAM one (see `DESIGN.md` §10). `tests/conftest.py` always sets it to the local test database.
 
 `TRIAGE_QUEUE_URL` is required by anything that imports `app/queue.py` (the relay; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324` and `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage`. `tests/conftest.py` always sets both, and `AWS_REGION`.
+
+`ANTHROPIC_API_KEY` is read by the Anthropic SDK itself when `AnthropicProvider` is built; only the triage worker and `pytest -m llm` need it.
 
 ## Current status
 

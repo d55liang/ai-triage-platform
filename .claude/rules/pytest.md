@@ -36,5 +36,11 @@ Rationale is in `DESIGN.md` §10.
 
 ## Aurora
 
-- Mark tests that need AWS with `@pytest.mark.aurora`. `addopts = "-m 'not aurora'"` excludes them by default; run them deliberately with `pytest -m aurora`.
+- Mark tests that need AWS with `@pytest.mark.aurora`. `addopts = "-m 'not aurora and not llm'"` excludes them by default; run them deliberately with `pytest -m aurora`.
 - An Aurora test builds its own engine with `create_iam_engine()`, because the forced `DATABASE_URL` means the module-level `engine` is local.
+
+## LLM providers
+
+- Plain `pytest` and CI never call an LLM. Test each Triage Provider adapter through its pure functions (request building, answer reading), with responses built from the SDK's own types (`Message.model_validate({...})`), not hand-rolled fakes.
+- One small live test per provider is marked `@pytest.mark.llm` and runs only with `pytest -m llm`. It needs the provider's API key in `.env` and costs real money, so keep it to one call with two candidates.
+- Tests of the Triage service use the `FakeProvider` in `tests/test_triage_service.py`, never a real adapter.
