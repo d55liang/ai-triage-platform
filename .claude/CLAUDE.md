@@ -41,9 +41,11 @@ app/
   models/response.py      Pydantic response bodies
   models/orm.py           SQLAlchemy table models
   models/enums.py         StrEnums shared by API and table models (TicketStatus, OutboxEventType, RequiredInputType)
+  models/triage.py        What a Triage Provider receives and returns (Candidate, MatchResult)
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
+  providers/              TriageProvider Protocol; the SDK adapters come in PR 3
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
   conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
@@ -51,6 +53,7 @@ tests/
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
+  test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly, since no worker exists yet
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
@@ -102,7 +105,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone.
-- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in four PRs: transactional outbox and relay, removing CREATED (built on `feat/ticket-outbox`, PR not opened yet); the Triage decision with consensus across Triage Providers; the workers and the Anthropic and Gemini adapters; AWS queues and IAM.
+- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in four PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (built on `feat/triage-decision`, PR not opened yet); the workers and the Anthropic and Gemini adapters; AWS queues and IAM.
 - **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); then an offline labelled evaluation set that measures each Triage Provider's accuracy.
 
 Update this section when a milestone starts or lands.

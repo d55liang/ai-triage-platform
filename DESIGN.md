@@ -459,8 +459,8 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 ### Creating a Run: one transaction with TRIAGED
 
 - **Decision:** `workflow_run_service.create_workflow_run(session, ticket_id, version_id)` runs in the caller's transaction (§5):
-  1. Compare-and-set the Ticket from TRIAGING to TRIAGED. If no row matches (the Ticket was cancelled, say), raise `ValueError` and insert nothing.
-  2. Load the version and read its definition's `is_enabled` with a plain `SELECT`. If it's Disabled, raise `ValueError`; the transaction rolls back, and the Ticket stays TRIAGING for Triage to try again.
+  1. Compare-and-set the Ticket from TRIAGING to TRIAGED, only while `claimed_at` still equals the caller's claim (the fencing token, §18). If no row matches (the Ticket was cancelled, or another worker took over the lease), raise `ValueError` and insert nothing.
+  2. Load the version and read its definition's `is_enabled` with a plain `SELECT`. If it's Disabled, raise `ValueError`; the transaction rolls back, and the Triage worker releases its claim so the redelivery triages again against the current definitions (§18).
   3. Insert the Run with status READY or AWAITING_INPUTS.
 
   Until Triage exists, tests call the service directly in the rollback session, after moving the Ticket to TRIAGING with `modify_ticket_status`.
@@ -517,10 +517,10 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ## 18. Triage: outbox, SQS and consensus across providers
 
-Status: **designed**, to be built before Conversation (§19), in four PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
+Status: **in progress** (PR 1 merged, PR 2 on `feat/triage-decision`), to be built before Conversation (§19), in four PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
 1. **Outbox (built):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
-2. **Triage decision:** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (claim, consensus, finishing with the fencing check, calling `create_workflow_run`), tested by calling the service directly.
+2. **Triage decision (built):** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 3.
 3. **Workers and providers:** the triage worker loop, the DLQ consumer, and the Anthropic and Gemini adapters, with their dependencies, rules files and env vars documented.
 4. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
 
@@ -534,11 +534,14 @@ relay process ─── polls outbox ─────┘──▶ SQS triage queu
 triage worker (separate process, long polling) ◀───┘
   tx1: claim QUEUED → TRIAGING, set claimed_at          commit
        every Triage Provider scores the Ticket            no transaction open
-  tx2: insert triage_results, then
-       ├─ all agree ─▶ TRIAGING → TRIAGED + Workflow Run + outbox ticket.triaged
-       └─ otherwise ─▶ TRIAGING → UNMATCHED              + outbox ticket.unmatched
+  tx2: insert triage_results, then (fenced by claimed_at)
+       ├─ all agree ─▶ TRIAGING → TRIAGED + Workflow Run [+ outbox ticket.triaged]
+       └─ otherwise ─▶ TRIAGING → UNMATCHED              [+ outbox ticket.unmatched]
        commit, then delete the SQS message
+  on failure: release the claim (TRIAGING → QUEUED, fenced), leave the message for redelivery
 ```
+
+The bracketed events are written from the Conversation milestone on, together with the `intake-events` queue they go to. Until then nothing could receive them, and the relay's queue lookup would fail on every batch that contained one.
 
 ```text
 outbox_events
@@ -548,13 +551,14 @@ outbox_events
   created_at    TIMESTAMPTZ    DEFAULT now()
   published_at  TIMESTAMPTZ    NULL until the relay has sent it; partial index WHERE published_at IS NULL
 
-triage_results                 one row per Triage Provider per attempt
+triage_results                 one row per Triage Provider × candidate × attempt: every score
   result_id         UUID PK
-  ticket_id         UUID FK    indexed; ON DELETE RESTRICT
+  ticket_id         UUID FK    indexed; ON DELETE CASCADE: a score means nothing without its Ticket
+  attempt           INTEGER    the Ticket's triage_attempts at the time
   provider          VARCHAR    e.g. anthropic, gemini
   model             VARCHAR    the exact model ID
-  definition_id     UUID FK    NULL when the provider selected nothing
-  match_confidence  NUMERIC(3,2) NULL, as the threshold
+  version_id        UUID FK    the Workflow Definition Version scored, threshold included
+  match_confidence  NUMERIC(3,2)  as the threshold
   created_at        TIMESTAMPTZ
 
 tickets.claimed_at       TIMESTAMPTZ NULL      set by each claim
@@ -579,23 +583,27 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 ### SQS: a standard queue, a DLQ, and stale claims
 
 - **Decision:** a standard queue (not FIFO), whose message body is an envelope, `{"event_id", "event_type", "payload"}`, with `payload` as stored in the outbox (`{"ticket_id": ...}`). Every queue gets the same shape, so the `intake-events` consumer can tell `ticket.triaged` from `ticket.unmatched`, and `event_id` traces a message back to its outbox row. The visibility timeout is about 60 s. A DLQ with `maxReceiveCount = 3` catches Tickets that keep failing, and a DLQ consumer compare-and-sets them to FAILED. The worker runs as its own long-polling process, not inside Uvicorn.
-- **Claiming:** `UPDATE tickets SET status = 'TRIAGING', claimed_at = now() WHERE ticket_id = :id AND (status = 'QUEUED' OR (status = 'TRIAGING' AND claimed_at < now() - interval '90 seconds')) RETURNING claimed_at`. The interval is longer than the visibility timeout, so a crashed worker's Ticket is taken over by the redelivery instead of hanging in TRIAGING.
-- **Finishing:** tx2 compare-and-sets `WHERE status = 'TRIAGING' AND claimed_at = :my_claimed_at`. `claimed_at` is a fencing token: a slow worker whose claim was taken over matches no row, so two workers can never both finish the same Ticket.
+- **Claiming:** a claim is a lease on the Ticket, taken with a compare-and-set and committed at once, so no transaction is open during the LLM calls: `UPDATE tickets SET status = 'TRIAGING', claimed_at = now() WHERE ticket_id = :id AND (status = 'QUEUED' OR (status = 'TRIAGING' AND claimed_at < now() - interval '45 seconds')) RETURNING claimed_at`. A claim that matches no row means another worker holds it or the Ticket has moved on (cancelled, finished), so the worker deletes the message and stops.
+- **Lease length:** 45 s, longer than one attempt (providers in parallel with a 20 s timeout, plus database time) and shorter than the 60 s visibility timeout. The first redelivery after a crash then finds the lease expired and takes over. A lease longer than the visibility timeout (the first draft said 90 s) would make that redelivery fail to claim and wait for another, spending one of the three receives before the DLQ.
+- **Finishing:** tx2 compare-and-sets `WHERE status = 'TRIAGING' AND claimed_at = :my_claimed_at`. `claimed_at` is a fencing token: a slow worker whose lease was taken over matches no row, so two workers can never both finish the same Ticket. The same check guards the Run: `create_workflow_run` takes `claimed_at` and adds it to its TRIAGING → TRIAGED compare-and-set (§17).
+- **Releasing:** when an attempt fails but the worker is alive (a provider error or timeout, invalid output, or the agreed definition disabled meanwhile), it releases its claim in its own transaction, a fenced TRIAGING → QUEUED `WHERE claimed_at = :mine`, and leaves the message undeleted. The redelivery claims a QUEUED Ticket straight away. Lease expiry is then only for crashes, where nothing was left to release.
 - **Why:**
   - Duplicate delivery is already handled by the claim, and order doesn't matter, so FIFO's limits and cost buy nothing.
   - A message that carries only IDs can't go stale; the worker reads the current Ticket and definitions from Postgres.
   - "Retries used up" in §11 becomes SQS's own receive count, with no retry counter of our own.
   - No transaction is open during LLM calls, so a cancel never waits on a provider (as §19's turns).
-- **Errors:** a provider error, malformed output, a `definition_id` that wasn't a candidate or a Match Confidence outside 0–1 is an exception. The worker validates provider output with a Pydantic model. The message isn't deleted, SQS redelivers it, and the third failure sends it to the DLQ.
-- **Alternatives:** a `retries` column and our own backoff (works with any queue, but duplicates what SQS does); a separate timeout sweeper for TRIAGING (one more process, where redelivery already triggers the check).
-- **Tradeoffs:** tuning: the visibility timeout must cover every provider's latency, and the stale-claim interval must stay above it. A Ticket that fails three times needs a person to look at it.
+- **Errors:** a provider error or timeout, malformed output, a score for a version that wasn't a candidate, a candidate left unscored or a Match Confidence outside 0–1 is an exception. Provider output is validated with a Pydantic model. The worker releases its claim and doesn't delete the message, SQS redelivers it, and the third failure sends it to the DLQ.
+- **Alternatives:** a `retries` column and our own backoff (works with any queue, but duplicates what SQS does); a separate timeout sweeper for TRIAGING (one more process, where redelivery already triggers the check); no release on failure, leaving every failed attempt to lease expiry (less code, but each failure waits out the lease and can cost an extra receive).
+- **Tradeoffs:** three timings must stay ordered: one attempt < the lease < the visibility timeout. Raising the provider timeout means raising the other two. A Ticket that fails three times needs a person to look at it.
+- **Soundbite:** "A claim is a lease with a fencing token. The compare-and-set picks one owner, the expiry lets a crashed worker's Ticket be taken over, and the token stops a slow worker from finishing after it lost the lease."
 
 ### Consensus across Triage Providers
 
-- **Decision:** each Triage Provider scores the Ticket independently against the current version of every enabled Workflow Definition and selects its best qualifying definition: the highest Match Confidence that meets that definition's Confidence Threshold, or none. A Workflow Run is created only if every provider selected the same definition. Otherwise the Ticket is UNMATCHED. Every provider's selection is stored in `triage_results`, whatever the outcome.
-- **How:** the providers are called in parallel from a `ThreadPoolExecutor` (the worker stays synchronous), each with a timeout of about 20 s, so the slowest one sets the latency and both fit inside the visibility timeout. A timeout is a provider error. If no definition is enabled, no provider is called, nothing is stored and the Ticket is UNMATCHED. The active providers come from `TRIAGE_PROVIDERS` (e.g. `anthropic,gemini`), so one can run alone locally. Models: `claude-haiku-5-5` and Gemini Flash, two small, fast models, which keeps the comparison fair.
+- **Decision:** each Triage Provider scores the Ticket independently against the current version of every enabled Workflow Definition and selects its best qualifying definition: the highest Match Confidence that meets that definition's Confidence Threshold, or none. A Workflow Run is created only if every provider selected the same definition. Otherwise the Ticket is UNMATCHED. A tie between qualifying definitions within one provider counts as no selection for that provider: ambiguity is what UNMATCHED is for. Every score from every provider is stored in `triage_results`, whatever the outcome, and selection and consensus are computed from those scores in code. The Run pins the version that was scored, even if a newer one was published during the attempt.
+- **How:** the providers are called concurrently with `asyncio` (only scoring is async; everything else stays synchronous), under one timeout of about 20 s, so the slowest one sets the latency and both fit inside the visibility timeout. A timeout is a provider error. If no definition is enabled, no provider is called, nothing is stored and the Ticket is UNMATCHED. The active providers come from `TRIAGE_PROVIDERS` (e.g. `anthropic,gemini`), so one can run alone locally. Models: `claude-haiku-5-5` and Gemini Flash, two small, fast models, which keeps the comparison fair.
 - **Why:** a wrong Run starts work nobody asked for, while an UNMATCHED Ticket costs one clarifying question. Requiring agreement trades recall for precision, which is the same reason Confidence Thresholds exist. The stored results are also the comparison between providers.
-- **Alternatives:** one primary provider, plus offline evaluation on a labelled set (cheaper and faster, but one model's mistakes go straight to Runs); shadow mode (others score but never decide); a separate `DISPUTED` status for disagreement (more precise, but the User sees the same clarifying questions as for UNMATCHED).
+- **Storing every score:** one row per provider and candidate, not one per provider with its selection. A provider's selection can be NULL (nothing qualified) or ambiguous (a tie), and a single row can't say how close it came. With every score, "would this Ticket have matched at a 0.70 threshold?" is a query, not another round of LLM calls, which the evaluation milestone needs.
+- **Alternatives:** one row per provider with its selection (fewer rows, but loses near misses and can't represent a tie); one primary provider, plus offline evaluation on a labelled set (cheaper and faster, but one model's mistakes go straight to Runs); shadow mode (others score but never decide); a separate `DISPUTED` status for disagreement (more precise, but the User sees the same clarifying questions as for UNMATCHED).
 - **Tradeoffs:** cost is the sum of the providers, latency is the slowest, and availability is the product: if one provider is down, Triage fails and retries. Gemini's free-tier rate limit caps throughput. "UNMATCHED" now covers both "nothing qualified" and "providers disagreed", which only `triage_results` tells apart.
 - **Soundbite:** "Two different models must independently pick the same workflow above its threshold before any work starts. I trade some recall for precision, and every provider's answer is stored, so the same data tells me how the models compare."
 
@@ -605,6 +613,24 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 - **Why:** the service doesn't know which SDK it's talking to, and each adapter is a short translation you can read in one pass. Structured output is where providers differ most, so that's where the code should be explicit.
 - **Alternatives:** LiteLLM (one dependency for every provider, but a large dependency tree and an abstraction that leaks around structured output).
 - **Tradeoffs:** two SDKs to keep up to date, and a third provider means a third adapter.
+- **Code layout (PR 2):** `app/models/triage.py` holds the data a provider receives and returns, `Candidate` and `MatchResult` (`version_id`, `match_confidence` in 0–1, rounded to 0.01), next to the other Pydantic models. `app/providers/triage_provider.py` holds the `TriageProvider` Protocol, a behaviour rather than data, in the package where the SDK adapters will live (PR 3). A fake provider lives in the tests. `app/services/triage_service.py` has one function per step, because the worker owns the transactions:
+  - `claim_ticket(session, ticket_id) -> Claim | None`: tx1, the claim plus the current version of each enabled definition. A `Claim` carries `ticket_id`, `claimed_at`, the request and those candidates.
+  - `async score_ticket(providers, request, candidates) -> list[ProviderScores]`: no session; providers in parallel, each output checked to score every candidate exactly once (a missing, unknown or duplicate candidate raises `ValueError`). No candidates means no provider is called.
+    - **Providers never see thresholds or ORM objects.** Each candidate is turned into a plain `Candidate(version_id, name, description, sample_requests)`. A model that saw the threshold could steer its score toward it, and the threshold would stop being an independent check.
+    - **Scores are rounded as they're validated.** `MatchResult.match_confidence` is a `Decimal` in 0–1, quantized to 0.01, so the value compared with the threshold is exactly the value stored in `NUMERIC(3,2)`. Otherwise 0.795 would be compared as below 0.80 and stored as 0.80, and the record would contradict the decision.
+    - **Async only where the I/O fans out.** `score_ticket` and `TriageProvider.score` are `async def`; nothing else is. The provider calls run in an `asyncio.TaskGroup` inside `asyncio.timeout(20)`. A timeout cancels the pending HTTP calls at their `await`, and if one provider fails, the TaskGroup cancels the others, so no call outlives the attempt. The worker (PR 3) is the bridge: it keeps one `asyncio.Runner` for its lifetime and runs `score_ticket` on it, so the SDKs' async clients stay on one event loop. A new loop per call (`asyncio.run`) would leave reused clients holding connections from a closed loop.
+    - **Rejected: threads.** A `ThreadPoolExecutor` needs no async code, but Python can't stop a thread: a timed-out call keeps running, so the pool has to abandon it (`shutdown(wait=False)`; a `with` block would wait for it) and rely on the SDK's own timeout to end it eventually. Rejected too: making the whole app async, which would rewrite every session, repository, route and test for no gain at a connection pool of two.
+    - **Trap:** cancellation only happens at an `await`. An adapter that called a sync SDK method inside `async def score` would block the loop, and the timeout could no longer interrupt it. Adapters use the async clients only.
+    - **Errors arrive as a group.** A `TaskGroup` raises an `ExceptionGroup` holding every provider's error; the worker treats it like any other failed attempt. A timeout raises `TimeoutError`.
+  - `finish_triage(session, claim, scores) -> TicketStatus | None`: tx2. A fenced `UPDATE ... SET triage_attempts = triage_attempts + 1 ... RETURNING` comes first; then every score is saved with that attempt number; then each provider's choice and the consensus decide between `create_workflow_run(..., claimed_at)` and a fenced TRIAGING → UNMATCHED.
+    - **None means stop, ValueError means retry.** `create_workflow_run` raises `ValueError` both for a lost claim and for a definition disabled during scoring, which need opposite handling. Doing the fenced increment first separates them: no row means the claim was lost (cancelled, deleted or taken over), so `finish_triage` returns `None`, writes nothing, and the worker deletes its message. A matching row holds the Ticket's lock until commit, so no cancel or takeover can come between it and `create_workflow_run`, whose `ValueError` can then only mean a disabled definition: the transaction rolls back (scores and the attempt count included), and the worker releases its claim for a retry. Locks are still taken Ticket first, then Run, as in cancelling.
+    - **Thresholds come from the claim.** Each provider's choice uses the thresholds of the versions it scored, read at claim time, so an Admin publishing a new version during scoring can't change the decision, and the Run pins the scored version.
+    - **A provider's choice** is its highest score at or above that version's threshold; none qualifying, or two tied at the top, means no choice. A Run needs every provider to make the same choice; no scores at all (no enabled definitions) is UNMATCHED.
+    - **No providers is an error.** `score_ticket` raises `ValueError` when given none, because an empty result would otherwise make every Ticket UNMATCHED without anyone noticing.
+    - **Deleting a scored Ticket** removes its scores (`ON DELETE CASCADE`). Runs stay `RESTRICT`: they are work in progress, while scores only describe how a Ticket was triaged, and deleting the Ticket is the User's own choice.
+  - `release_claim(session, claim)`: a fenced TRIAGING → QUEUED.
+
+  Providers are passed in as an argument; the worker in PR 3 builds them from `TRIAGE_PROVIDERS`.
 
 ### Local testing
 
@@ -657,6 +683,8 @@ POST /api/tickets and PATCH /api/tickets/{id} are removed: Tickets change only t
 
 - There is no authentication, so no endpoint checks that the caller owns the Ticket. §12 requires this check for cancelling, and a client-supplied `user_id` wouldn't prove ownership. The Workflow Definition endpoints (§15) are just as open: anyone can act as an Admin.
 - The cancel race has no automated test, because the rollback fixture runs on one connection. It was checked by hand with two connections and real commits against the local database.
+- The three Triage transactions (claim, score with no transaction open, finish) are tested inside one rollback transaction. Checked once by hand with real commits: the `Claim`'s candidates stayed readable after tx1 committed (`expire_on_commit=False`), finishing created the Run on the scored version, and deleting the Ticket removed its scores.
+- Concurrent claims have no automated test either. Checked by hand: eight threads, each on its own connection, claimed one committed QUEUED Ticket at once, and exactly one got a claim (§18).
 - Concurrent Required Input submissions have no automated test either, for the same reason. Checked by hand: the second `UPDATE` waited for the first to commit, and the Run kept both values (§17).
 - The test session is shared by every request in a test, so a request that fails after writing could leave a stale object in its cache: the savepoint rolls back the database, but an object refreshed by `UPDATE ... RETURNING` isn't expired with it. The override in `tests/conftest.py` expires the session after a failed request, as a fresh production session would never see the stale object. Found when a cancel that returned 409 still read back as CANCELLED.
 - `UpdateTicketRequest` fields are typed without `| None` but default to `None`. This is deliberate: Pydantic doesn't validate defaults, so an omitted field is simply unset (and dropped by `exclude_unset=True`), while an explicit `null` is rejected with 422 instead of reaching a `NOT NULL` column and failing with 500. The cost is an annotation that type checkers flag.

@@ -75,6 +75,12 @@ def fetch_all_workflow_definitions(
     return list(session.execute(statement))
 
 
+def fetch_enabled_workflow_definitions(session: Session) -> list[DefinitionWithVersion]:
+    """Triage's candidates: every enabled definition with its current version."""
+    statement = _select_with_current_version().where(WorkflowDefinition.is_enabled)
+    return list(session.execute(statement))
+
+
 def fetch_workflow_definition(session: Session, definition_id: UUID) -> DefinitionWithVersion:
     statement = _select_with_current_version().where(
         WorkflowDefinition.definition_id == definition_id
