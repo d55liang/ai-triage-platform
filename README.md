@@ -13,7 +13,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **Ruff** for lint and format
 - **pytest** against a local PostgreSQL 17 in Docker
 - **Amazon SQS** (via `boto3`), fed by a transactional outbox; **ElasticMQ** stands in locally
-- **Anthropic API** (`anthropic`, Claude Haiku 5.5) as a Triage Provider
+- **Anthropic API** (`anthropic`, Claude Haiku 5.5) and **Gemini API** (`google-genai`, Gemini 3.5 Flash-Lite) as Triage Providers
 - **GitHub Actions** runs Ruff, `alembic check` and pytest on every PR
 
 ## Setup
@@ -47,11 +47,14 @@ TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
 
 Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need either variable.
 
-Triage Providers need their API key. For the Anthropic provider, add:
+Triage Providers need their API keys:
 
 ```bash
 ANTHROPIC_API_KEY=<key from the Claude Console>
+GEMINI_API_KEY=<key from Google AI Studio>
 ```
+
+Don't also set `GOOGLE_API_KEY`: the Gemini SDK prefers it over `GEMINI_API_KEY`.
 
 AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user.
 

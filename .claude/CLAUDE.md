@@ -26,7 +26,7 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Tests | pytest, httpx2 (`TestClient`) | |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) | |
 | Queue | Amazon SQS through `boto3`, fed by a transactional outbox; ElasticMQ in Docker locally and in CI | Queues in AWS (need approval) |
-| Triage Providers | Anthropic API through `anthropic` (async client, structured outputs) | Gemini through `google-genai` |
+| Triage Providers | Anthropic API through `anthropic` and Gemini API through `google-genai` (async clients, structured outputs) | |
 
 Technology-specific rules live in [rules/](rules/).
 
@@ -46,7 +46,7 @@ app/
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
-  providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py)
+  providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py, gemini_provider.py)
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
 tests/
   conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
@@ -57,6 +57,7 @@ tests/
   test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly, since no worker exists yet
   test_triage_prompt.py   The shared prompt, score schema and answer parsing; pure, no database
   test_anthropic_provider.py  The Anthropic adapter's request and answer handling; one live call marked llm
+  test_gemini_provider.py  The Gemini adapter's config and answer handling; one live call marked llm
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
@@ -106,7 +107,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 `TRIAGE_QUEUE_URL` is required by anything that imports `app/queue.py` (the relay; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324` and `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage`. `tests/conftest.py` always sets both, and `AWS_REGION`.
 
-`ANTHROPIC_API_KEY` is read by the Anthropic SDK itself when `AnthropicProvider` is built; only the triage worker and `pytest -m llm` need it.
+`ANTHROPIC_API_KEY` and `GEMINI_API_KEY` are read by each SDK itself when `AnthropicProvider` or `GeminiProvider` is built; only the triage worker and `pytest -m llm` need them. `GeminiProvider` raises without its key, and `GOOGLE_API_KEY`, if set, takes priority over `GEMINI_API_KEY`.
 
 ## Current status
 
