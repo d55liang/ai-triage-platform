@@ -517,13 +517,13 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ## 18. Triage: outbox, SQS and consensus across providers
 
-Status: **in progress** (PRs 1–3 merged, PR 4 on `feat/triage-worker`), to be built before Conversation (§19), in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
+Status: **in progress** (PRs 1–4 merged, PR 5 on `feat/aws-queues`), to be built before Conversation (§19), in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
 1. **Outbox (merged):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
 2. **Triage decision (merged):** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 4.
 3. **Providers (merged):** the Anthropic and Gemini adapters, the shared prompt, `build_providers()` from `TRIAGE_PROVIDERS`, the dependencies, an `llm-providers.md` rules file, and live tests marked `llm` (see *Triage Provider adapters*).
-4. **Triage worker:** the worker loop on one `asyncio.Runner`, deleting or releasing each message, and the DLQ consumer (see *Triage worker and DLQ consumer*).
-5. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
+4. **Triage worker (merged):** the worker loop on one `asyncio.Runner`, deleting or releasing each message, and the DLQ consumer (see *Triage worker and DLQ consumer*).
+5. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws` (see *AWS queues and IAM*).
 
 Split from one "workers and providers" PR so each stays small enough to review and explain in one sitting; the adapters can be checked live before anything consumes the queue.
 
@@ -677,7 +677,22 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 
 - **Decision:** ElasticMQ, an SQS-compatible server, runs in `docker-compose.yml` next to Postgres and in CI. An `SQS_ENDPOINT_URL` env var points boto3 at it, and tests set it. One deliberate test against real SQS is marked `aws`, like `aurora`.
 - **Alternatives:** moto (in-process, no container, but it mocks boto3 itself, so less of the real protocol is tested).
-- **AWS setup still needed (with approval):** the queue, the DLQ, and an IAM policy for the app's `sqs:*Message` actions on them; the `daniel` IAM user currently has no SQS permissions.
+- **AWS setup:** see *AWS queues and IAM* below.
+
+### AWS queues and IAM (PR 5)
+
+- **Decision:** one CloudFormation template, `infra/triage-queues.yaml`, defines both queues and a customer-managed IAM policy attached to the `daniel` user. It is deployed from AWS CloudShell, signed in as root, with one `aws cloudformation deploy`, and removed with one `delete-stack`. The `daniel` user can't create SQS or IAM resources, and keeps only what the app needs.
+- **Queues**, with the same names and settings as `elasticmq.conf`:
+  - `triage`: standard, `VisibilityTimeout` 60 s, `ReceiveMessageWaitTimeSeconds` 20, redrive to `triage-dlq` with `maxReceiveCount` 3. SQS moves a message once its receive count *exceeds* 3, so the fourth receive never reaches a worker.
+  - `triage-dlq`: `MessageRetentionPeriod` 14 days (the maximum), longer than the source's 4-day default as AWS recommends, so a dead letter survives the DLQ consumer being down. A redrive-allow policy lets only `triage` use it as a DLQ.
+  - Both: SSE-SQS encryption, the default, stated explicitly.
+  - The DLQ's redrive-allow policy names `triage` by an ARN built with `!Sub`, not `!GetAtt`: the source already references the DLQ's ARN, and two `GetAtt`s would be a circular dependency.
+- **IAM:** one policy, scoped to the two queue ARNs: `sqs:SendMessage` on `triage` (the relay; it also covers `SendMessageBatch`), `sqs:ReceiveMessage` and `sqs:DeleteMessage` on both (the workers), and `sqs:GetQueueUrl` and `sqs:GetQueueAttributes` on both (the AWS test, read-only). No purge, list, create or delete. All three processes run as one user on one laptop for now; a role per process is the step once they run on AWS compute.
+- **Test:** `tests/test_sqs_aws.py`, marked `aws` and excluded by default like `aurora`. It builds its own boto3 client without `SQS_ENDPOINT_URL`, because `conftest.py` forces ElasticMQ for `app.queue`, and looks up the queues by name, so no account ID or URL is in code. It checks what local tests can't: that the real queues match `elasticmq.conf` (visibility timeout, redrive) and that the policy allows a send, receive and delete round trip. Run it with no workers running: its test message isn't a `ticket.queued` envelope.
+- **Cost:** SQS's free tier is 1 million requests a month. A long-polling process makes about 3 receives a minute, about 130,000 a month, so the triage worker and the DLQ consumer use about a quarter of it. CloudFormation itself is free.
+- **Alternatives:** a CLI runbook of `aws sqs` and `aws iam` commands (no new technology, but nothing records what exists and undoing it is by hand); Terraform (portable across clouds, but a tool and state file to manage for three resources); broader SQS and IAM rights for `daniel` so resources can be created from the laptop (less switching to CloudShell, but against least privilege).
+- **Tradeoffs:** one more technology to explain. Queue names are fixed, so a change that needs replacement means deleting the stack (and waiting 60 s before reusing a name). An organisation policy could block CloudFormation, which the `daniel` user can't check; the template's resources then become the CLI runbook.
+- **Soundbite:** "The queues and their permissions are one CloudFormation stack, mirroring the local ElasticMQ config, deployed by root and torn down in one command. The app's user can only send, receive and delete on those two queues, and one deliberate test proves the real queues behave like the local ones."
 
 ## 19. Conversation and the Intake Agent turn
 
