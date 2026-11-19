@@ -35,7 +35,7 @@ Technology-specific rules live in [rules/](rules/).
 ```text
 app/
   main.py                 FastAPI app, /health, router registration
-  database.py             Engine (IAM token per connection, pinned TLS), SessionLocal, Base, get_session
+  database.py             Engine (IAM token per connection, pinned TLS), SessionLocal, Transaction (what workers take to open one), Base, get_session
   queue.py                SQS client (ElasticMQ when SQS_ENDPOINT_URL is set), queue URLs, batch send, receive one and delete
   dependencies.py         FastAPI dependencies (SessionDep)
   models/request.py       Pydantic request bodies
@@ -50,8 +50,9 @@ app/
   providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py, gemini_provider.py); factory.py: build_providers() from TRIAGE_PROVIDERS
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
   workers/triage.py       Triage worker process: claims, scores and finishes one queued Ticket per message
+  workers/dlq.py          DLQ consumer process: moves each Ticket whose retries are used up to FAILED
 tests/
-  conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration, client and empty_queues fixtures
+  conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration, client, empty_queues and transaction fixtures
   fakes.py                FakeProvider, shared by the Triage service and worker tests
   test_tickets_api.py     Ticket API tests through TestClient
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
@@ -60,6 +61,7 @@ tests/
   test_queue.py           Receiving and deleting messages against ElasticMQ
   test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly
   test_triage_worker.py   The worker's handling of one message, with fake providers and savepoints for its transactions
+  test_dlq_worker.py      The DLQ consumer's handling of one dead letter, including a slow worker finishing late
   test_triage_prompt.py   The shared prompt, score schema and answer parsing; pure, no database
   test_anthropic_provider.py  The Anthropic adapter's request and answer handling; one live call marked llm
   test_gemini_provider.py  The Gemini adapter's config and answer handling; one live call marked llm
@@ -79,6 +81,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload      # http://localhost:8000/docs, /health, /api/tickets
 python -m app.workers.relay        # outbox relay: publishes saved events to SQS; Ctrl-C stops it after the current batch
 python -m app.workers.triage       # triage worker: needs TRIAGE_PROVIDERS and the providers' API keys; Ctrl-C stops it after the current message (up to 20 s)
+python -m app.workers.dlq          # DLQ consumer: moves Tickets whose retries are used up to FAILED; Ctrl-C as above
 ```
 
 ```bash

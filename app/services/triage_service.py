@@ -77,6 +77,19 @@ def release_claim(session: Session, claim: Claim) -> None:
         )
 
 
+def fail_ticket(session: Session, ticket_id: UUID) -> bool:
+    """Moves a Ticket whose retries are used up to FAILED; False if it had already moved on."""
+    # QUEUED: every attempt failed and released its claim. TRIAGING: a worker crashed on the last
+    # receive. Not fenced by claimed_at: a slow worker's own fenced finish then matches nothing.
+    # ValueError: the Ticket moved on (cancelled, finished). KeyError: it was deleted.
+    with suppress(ValueError, KeyError):
+        modify_ticket_status(
+            session, ticket_id, [TicketStatus.QUEUED, TicketStatus.TRIAGING], TicketStatus.FAILED
+        )
+        return True
+    return False
+
+
 async def score_ticket(
     providers: list[TriageProvider],
     request: str,

@@ -3,21 +3,14 @@
 import asyncio
 import logging
 import signal
-from collections.abc import Callable
-from contextlib import AbstractContextManager
 from types import FrameType
 
-from sqlalchemy.orm import Session
-
-from app.database import SessionLocal
+from app.database import SessionLocal, Transaction
 from app.models.queue import TicketQueuedMessage
 from app.providers.factory import build_providers
 from app.providers.triage_provider import TriageProvider
 from app.queue import TRIAGE_QUEUE_URL, delete_message, receive_message
 from app.services.triage_service import claim_ticket, finish_triage, release_claim, score_ticket
-
-# Opens one transaction and commits it on exit: SessionLocal.begin, or a savepoint in tests.
-Transaction = Callable[[], AbstractContextManager[Session]]
 
 logger = logging.getLogger(__name__)
 

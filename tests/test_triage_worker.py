@@ -7,7 +7,6 @@ receive-and-delete loop itself isn't tested; returning means the worker deletes 
 import asyncio
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
 from uuid import UUID, uuid4
 
 import pytest
@@ -16,9 +15,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.database import Transaction
 from app.models.orm import Ticket, TriageResult, WorkflowRun
 from app.services.triage_service import claim_ticket
-from app.workers.triage import Transaction, handle_message
+from app.workers.triage import handle_message
 from tests.fakes import FakeProvider
 
 TICKET = {"user_id": "user-1", "message": "My laptop died, I need a new one"}
@@ -30,23 +30,6 @@ WORKFLOW_DEFINITION = {
     "required_inputs": [],
     "sample_requests": ["My laptop died, I need a new one"],
 }
-
-
-@pytest.fixture
-def transaction(session: Session) -> Transaction:
-    """Stands in for SessionLocal.begin: a savepoint on the test session."""
-
-    @contextmanager
-    def savepoint() -> Iterator[Session]:
-        try:
-            with session.begin_nested():
-                yield session
-        except Exception:
-            # As in the client override: drop values a rolled-back UPDATE ... RETURNING refreshed.
-            session.expire_all()
-            raise
-
-    return savepoint
 
 
 @pytest.fixture

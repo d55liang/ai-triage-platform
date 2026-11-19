@@ -30,6 +30,7 @@ Rationale is in `DESIGN.md` §18.
 - Delivery is at least once and unordered (standard queues). Every consumer must be idempotent, which here means a compare-and-set on the row's status.
 - Delete a message only after the transaction that handled it has committed. A message that isn't deleted comes back after the visibility timeout; after `maxReceiveCount` receives it moves to the DLQ.
 - Never hold a database transaction open while waiting on `receive_message` (long polling).
+- The DLQ consumer deletes a dead letter after every outcome, malformed bodies included, since it has nowhere further to go. Only an exception (an outage) keeps it.
 
 ## Queues
 

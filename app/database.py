@@ -1,5 +1,6 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,10 @@ engine = create_engine(DATABASE_URL) if DATABASE_URL else create_iam_engine()
 
 
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+# Opens one transaction and commits it on exit. Workers take one instead of using SessionLocal.begin
+# directly, so tests can pass a savepoint on the test session.
+Transaction = Callable[[], AbstractContextManager[Session]]
 
 
 def get_session() -> Iterator[Session]:

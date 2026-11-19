@@ -9,6 +9,7 @@ os.environ["TRIAGE_DLQ_URL"] = "http://127.0.0.1:9324/000000000000/triage-dlq"
 os.environ["AWS_REGION"] = "us-east-2"
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.database import engine, get_session
+from app.database import Transaction, engine, get_session
 from app.main import app
 from app.queue import TRIAGE_DLQ_URL, TRIAGE_QUEUE_URL, sqs_client
 
@@ -70,3 +71,21 @@ def client(session: Session) -> Iterator[TestClient]:
     app.dependency_overrides[get_session] = override_get_session
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def transaction(session: Session) -> Transaction:
+    """Stands in for SessionLocal.begin in worker tests: a savepoint on the test session, so each of
+    the worker's commits is undone with the test."""
+
+    @contextmanager
+    def savepoint() -> Iterator[Session]:
+        try:
+            with session.begin_nested():
+                yield session
+        except Exception:
+            # As in the client override: drop values a rolled-back UPDATE ... RETURNING refreshed.
+            session.expire_all()
+            raise
+
+    return savepoint
