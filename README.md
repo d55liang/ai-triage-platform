@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS (§18); the Triage workers and the Intake Agent are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS, and a triage worker scores it with two Triage Providers and creates a Workflow Run when they agree (§18); the DLQ consumer and the Intake Agent are not built yet.
 
 ## Tech stack
 
@@ -80,6 +80,12 @@ In a second terminal, start the outbox relay, which publishes each new Ticket's 
 
 ```bash
 python -m app.workers.relay
+```
+
+In a third terminal, start the triage worker. It needs `TRIAGE_PROVIDERS` and the API keys of the providers it names (see *Setup*). It claims each queued Ticket, has the Triage Providers score it, and moves it to TRIAGED (with a Workflow Run) or UNMATCHED. Ctrl-C stops it after the current message, which can take up to 20 s while it waits on the queue:
+
+```bash
+python -m app.workers.triage
 ```
 
 ## Lint and format

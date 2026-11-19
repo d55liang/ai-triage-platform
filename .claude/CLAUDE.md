@@ -43,19 +43,23 @@ app/
   models/orm.py           SQLAlchemy table models
   models/enums.py         StrEnums shared by API and table models (TicketStatus, OutboxEventType, RequiredInputType)
   models/triage.py        What a Triage Provider receives and returns (Candidate, MatchResult)
+  models/queue.py         Queue message envelopes as consumers validate them (TicketQueuedMessage)
   routers/                HTTP layer: validation, status codes, error mapping
   services/               Business logic: IDs, defaults, orchestration
   repositories/           Persistence: SQL and row mapping
   providers/              TriageProvider Protocol; triage_prompt.py: the shared prompt, score schema and parser; one adapter per SDK (anthropic_provider.py, gemini_provider.py); factory.py: build_providers() from TRIAGE_PROVIDERS
   workers/relay.py        Outbox relay process: publishes unpublished outbox events to SQS
+  workers/triage.py       Triage worker process: claims, scores and finishes one queued Ticket per message
 tests/
-  conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration and client fixtures
+  conftest.py             Forces the local DATABASE_URL and ElasticMQ; migration, client and empty_queues fixtures
+  fakes.py                FakeProvider, shared by the Triage service and worker tests
   test_tickets_api.py     Ticket API tests through TestClient
   test_workflow_definitions_api.py  Workflow Definition API tests through TestClient
   test_workflow_runs_api.py  Workflow Run tests; creation calls the service directly, since only Triage creates Runs
   test_outbox_relay.py    Relay publishing against ElasticMQ; calls the outbox service directly
   test_queue.py           Receiving and deleting messages against ElasticMQ
-  test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly, since no worker exists yet
+  test_triage_service.py  Triage steps (claim, release, scoring with fake providers, finishing) called directly
+  test_triage_worker.py   The worker's handling of one message, with fake providers and savepoints for its transactions
   test_triage_prompt.py   The shared prompt, score schema and answer parsing; pure, no database
   test_anthropic_provider.py  The Anthropic adapter's request and answer handling; one live call marked llm
   test_gemini_provider.py  The Gemini adapter's config and answer handling; one live call marked llm
@@ -74,6 +78,7 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload      # http://localhost:8000/docs, /health, /api/tickets
 python -m app.workers.relay        # outbox relay: publishes saved events to SQS; Ctrl-C stops it after the current batch
+python -m app.workers.triage       # triage worker: needs TRIAGE_PROVIDERS and the providers' API keys; Ctrl-C stops it after the current message (up to 20 s)
 ```
 
 ```bash
@@ -107,11 +112,11 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 `DATABASE_URL` is optional and selects a plain engine instead of the IAM one (see `DESIGN.md` §10). `tests/conftest.py` always sets it to the local test database.
 
-`TRIAGE_QUEUE_URL` and `TRIAGE_DLQ_URL` are required by anything that imports `app/queue.py` (the relay and the workers; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324` `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage` and `TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq`. `tests/conftest.py` always sets all three, and `AWS_REGION`.
+`TRIAGE_QUEUE_URL` and `TRIAGE_DLQ_URL` are required by anything that imports `app/queue.py` (the relay and the workers; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324`, `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage` and `TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq`. `tests/conftest.py` always sets all three, and `AWS_REGION`.
 
 `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` are read by each SDK itself when `AnthropicProvider` or `GeminiProvider` is built; only the triage worker and `pytest -m llm` need them. `GeminiProvider` raises without its key, and `GOOGLE_API_KEY`, if set, takes priority over `GEMINI_API_KEY`.
 
-`TRIAGE_PROVIDERS` is required by `build_providers()` (the triage worker, PR 4): a comma-separated list of provider names, e.g. `anthropic,gemini`, or one name to run with a single key locally. An empty list, an unknown name or a repeat raises `ValueError`.
+`TRIAGE_PROVIDERS` is required by `build_providers()`, which the triage worker calls at startup: a comma-separated list of provider names, e.g. `anthropic,gemini`, or one name to run with a single key locally. An empty list, an unknown name or a repeat raises `ValueError`.
 
 ## Current status
 

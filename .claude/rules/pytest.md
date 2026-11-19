@@ -43,4 +43,5 @@ Rationale is in `DESIGN.md` §10.
 
 - Plain `pytest` and CI never call an LLM. Test each Triage Provider adapter through its pure functions (request building, answer reading), with responses built from the SDK's own types (`Message.model_validate({...})`, `GenerateContentResponse.model_validate({...})`), not hand-rolled fakes.
 - One small live test per provider is marked `@pytest.mark.llm` and runs only with `pytest -m llm`. It needs the provider's API key in `.env` and costs real money, so keep it to one call with two candidates.
-- Tests of the Triage service use the `FakeProvider` in `tests/test_triage_service.py`, never a real adapter.
+- Tests of the Triage service and worker use `FakeProvider` from `tests/fakes.py`, never a real adapter.
+- Worker tests pass `handle_message` a transaction factory that yields the test session inside `begin_nested()`, so each of the worker's commits is a savepoint and the test still rolls back.
