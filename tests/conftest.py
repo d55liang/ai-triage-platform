@@ -5,6 +5,7 @@ os.environ["DATABASE_URL"] = "postgresql+psycopg://postgres@127.0.0.1:5433/ai_tr
 # Likewise for SQS: ElasticMQ from docker-compose.yml, never AWS.
 os.environ["SQS_ENDPOINT_URL"] = "http://127.0.0.1:9324"
 os.environ["TRIAGE_QUEUE_URL"] = "http://127.0.0.1:9324/000000000000/triage"
+os.environ["TRIAGE_DLQ_URL"] = "http://127.0.0.1:9324/000000000000/triage-dlq"
 os.environ["AWS_REGION"] = "us-east-2"
 
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.database import engine, get_session
 from app.main import app
+from app.queue import TRIAGE_DLQ_URL, TRIAGE_QUEUE_URL, sqs_client
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -30,6 +32,16 @@ def alembic_config() -> Config:
 @pytest.fixture(scope="session", autouse=True)
 def migrated_database(alembic_config: Config) -> None:
     command.upgrade(alembic_config, "head")
+
+
+@pytest.fixture
+def empty_queues() -> Iterator[None]:
+    """The queues aren't rolled back with the database, so a test starts and ends with them empty."""
+    for queue_url in (TRIAGE_QUEUE_URL, TRIAGE_DLQ_URL):
+        sqs_client.purge_queue(QueueUrl=queue_url)
+    yield
+    for queue_url in (TRIAGE_QUEUE_URL, TRIAGE_DLQ_URL):
+        sqs_client.purge_queue(QueueUrl=queue_url)
 
 
 @pytest.fixture

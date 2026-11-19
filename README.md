@@ -43,9 +43,10 @@ The outbox relay also needs a queue. To use the local ElasticMQ from `docker-com
 ```bash
 SQS_ENDPOINT_URL=http://127.0.0.1:9324
 TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
+TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq
 ```
 
-Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need either variable.
+Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need these variables.
 
 Triage Providers need their API keys, and `TRIAGE_PROVIDERS` chooses which ones run (one name, such as `anthropic`, needs only that provider's key):
 

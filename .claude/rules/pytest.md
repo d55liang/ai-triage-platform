@@ -17,8 +17,8 @@ Rationale is in `DESIGN.md` §10.
 
 ## SQS
 
-- Tests use ElasticMQ from `docker-compose.yml` on `127.0.0.1:9324`. `tests/conftest.py` hard-sets `SQS_ENDPOINT_URL`, `TRIAGE_QUEUE_URL` and `AWS_REGION` next to `DATABASE_URL`, so no test can reach AWS.
-- The queue isn't rolled back with the database. Tests that send or receive use an autouse fixture that purges the queue before and after each test.
+- Tests use ElasticMQ from `docker-compose.yml` on `127.0.0.1:9324`. `tests/conftest.py` hard-sets `SQS_ENDPOINT_URL`, `TRIAGE_QUEUE_URL`, `TRIAGE_DLQ_URL` and `AWS_REGION` next to `DATABASE_URL`, so no test can reach AWS.
+- The queues aren't rolled back with the database. Tests that send or receive request the `empty_queues` fixture (`pytestmark = pytest.mark.usefixtures("empty_queues")`), which purges both queues before and after each test.
 - A test that commits for real must also delete the outbox events it wrote, or the relay tests will publish them.
 
 ## Writing tests

@@ -1,5 +1,4 @@
 import json
-from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,12 +13,7 @@ from app.services.outbox_service import publish_pending_events
 TICKET = {"user_id": "user-1", "message": "My laptop died, I need a new one"}
 
 
-@pytest.fixture(autouse=True)
-def empty_queue() -> Iterator[None]:
-    """The queue isn't rolled back with the database, so each test starts and ends with it empty."""
-    sqs_client.purge_queue(QueueUrl=TRIAGE_QUEUE_URL)
-    yield
-    sqs_client.purge_queue(QueueUrl=TRIAGE_QUEUE_URL)
+pytestmark = pytest.mark.usefixtures("empty_queues")
 
 
 def receive_bodies() -> list[dict]:
