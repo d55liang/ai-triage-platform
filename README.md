@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS (§18); the Triage workers and the Intake Agent are not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS, a triage worker scores it with two Triage Providers and creates a Workflow Run when they agree; a Ticket that fails three times is moved to FAILED by a DLQ consumer (§18). The Intake Agent is not built yet.
 
 ## Tech stack
 
@@ -43,9 +43,10 @@ The outbox relay also needs a queue. To use the local ElasticMQ from `docker-com
 ```bash
 SQS_ENDPOINT_URL=http://127.0.0.1:9324
 TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
+TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq
 ```
 
-Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need either variable.
+Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need these variables.
 
 Triage Providers need their API keys, and `TRIAGE_PROVIDERS` chooses which ones run (one name, such as `anthropic`, needs only that provider's key):
 
@@ -79,6 +80,18 @@ In a second terminal, start the outbox relay, which publishes each new Ticket's 
 
 ```bash
 python -m app.workers.relay
+```
+
+In a third terminal, start the triage worker. It needs `TRIAGE_PROVIDERS` and the API keys of the providers it names (see *Setup*). It claims each queued Ticket, has the Triage Providers score it, and moves it to TRIAGED (with a Workflow Run) or UNMATCHED. Ctrl-C stops it after the current message, which can take up to 20 s while it waits on the queue:
+
+```bash
+python -m app.workers.triage
+```
+
+In a fourth terminal, start the DLQ consumer. A Ticket whose triage fails three times lands in the dead-letter queue, and the consumer moves it to FAILED and logs it as an error:
+
+```bash
+python -m app.workers.dlq
 ```
 
 ## Lint and format

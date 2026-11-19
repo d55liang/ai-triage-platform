@@ -13,7 +13,8 @@ Rationale is in `DESIGN.md` §18.
 
 ## Client
 
-- One SQS client per process, created in `app/queue.py` with an explicit `region_name`, the same way `app/database.py` holds the engine. Queue URLs are read there too.
+- One SQS client per process, created in `app/queue.py` with an explicit `region_name`, the same way `app/database.py` holds the engine. Queue URLs (`TRIAGE_QUEUE_URL`, `TRIAGE_DLQ_URL`) are read there too, as required variables.
+- Only `app/queue.py` touches boto3's response shapes. It returns plain values (`send_messages` the accepted IDs, `receive_message` a `ReceivedMessage` or `None`).
 - `SQS_ENDPOINT_URL` set means ElasticMQ; unset means AWS. Never hard-code an endpoint or queue URL outside `tests/conftest.py`.
 - Use the default boto3 credential chain. Only CI sets dummy keys, because boto3 won't sign requests without some and ElasticMQ ignores them.
 
@@ -25,9 +26,11 @@ Rationale is in `DESIGN.md` §18.
 
 ## Consuming
 
+- Receive one message at a time (`MaxNumberOfMessages=1`) with long polling (`WaitTimeSeconds=20`). The visibility timeout starts at receive, so a batch handled one by one lets later messages reappear and spends their receives. Scale with more processes.
 - Delivery is at least once and unordered (standard queues). Every consumer must be idempotent, which here means a compare-and-set on the row's status.
 - Delete a message only after the transaction that handled it has committed. A message that isn't deleted comes back after the visibility timeout; after `maxReceiveCount` receives it moves to the DLQ.
 - Never hold a database transaction open while waiting on `receive_message` (long polling).
+- The DLQ consumer deletes a dead letter after every outcome, malformed bodies included, since it has nowhere further to go. Only an exception (an outage) keeps it.
 
 ## Queues
 
@@ -37,4 +40,4 @@ Rationale is in `DESIGN.md` §18.
 ## Tests
 
 - Tests use ElasticMQ from `docker-compose.yml` on `127.0.0.1:9324`; `tests/conftest.py` hard-sets the endpoint and queue URLs, as it does for `DATABASE_URL`.
-- The queue isn't rolled back with the database. A test that sends or receives purges the queue before and after itself.
+- The queues aren't rolled back with the database. A test that sends or receives uses the `empty_queues` fixture from `tests/conftest.py`, which purges both queues before and after it.
