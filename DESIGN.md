@@ -517,12 +517,12 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ## 18. Triage: outbox, SQS and consensus across providers
 
-Status: **in progress** (PRs 1 and 2 merged, PR 3 on `feat/triage-providers`), to be built before Conversation (§19), in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
+Status: **in progress** (PRs 1–3 merged, PR 4 on `feat/triage-worker`), to be built before Conversation (§19), in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
 1. **Outbox (merged):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
 2. **Triage decision (merged):** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 4.
-3. **Providers:** the Anthropic and Gemini adapters, the shared prompt, `build_providers()` from `TRIAGE_PROVIDERS`, the dependencies, an `llm-providers.md` rules file, and live tests marked `llm` (see *Triage Provider adapters*).
-4. **Triage worker:** the worker loop on one `asyncio.Runner`, deleting or releasing each message, and the DLQ consumer.
+3. **Providers (merged):** the Anthropic and Gemini adapters, the shared prompt, `build_providers()` from `TRIAGE_PROVIDERS`, the dependencies, an `llm-providers.md` rules file, and live tests marked `llm` (see *Triage Provider adapters*).
+4. **Triage worker:** the worker loop on one `asyncio.Runner`, deleting or releasing each message, and the DLQ consumer (see *Triage worker and DLQ consumer*).
 5. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws`.
 
 Split from one "workers and providers" PR so each stays small enough to review and explain in one sitting; the adapters can be checked live before anything consumes the queue.
@@ -649,6 +649,29 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 - **Alternatives:** Gemini's newer Interactions API (`client.interactions.create`), which Google now recommends for new code. `generateContent` is labelled legacy but still supported, and it is the API whose async client (`client.aio`) is documented; the Interactions API's async form isn't yet. One adapter can move later without touching the service.
 - **Tradeoffs:** two SDKs and two structured-output dialects to maintain. Haiku 5.5 is far cheaper per token than Gemini's paid tier, while Gemini's free tier caps throughput with rate limits.
 - **Soundbite:** "Each adapter is a translation: it builds a schema with one required field per candidate, so the model can't skip or invent a workflow, sends one shared prompt, and parses the answer back into validated scores. Deadlines and retries live in one place, the Triage service and the queue, not in each SDK."
+
+### Triage worker and DLQ consumer (PR 4)
+
+- **Decision:** two processes shaped like the relay. `python -m app.workers.triage` long-polls the triage queue for one message at a time (`MaxNumberOfMessages=1`, `WaitTimeSeconds=20`), handles it, and deletes it only after its transaction commits. `python -m app.workers.dlq` long-polls `triage-dlq` and moves each Ticket to FAILED. Both stop on SIGINT or SIGTERM after the current message, and log and carry on after an unexpected error. The DLQ URL comes from a required `TRIAGE_DLQ_URL`, like `TRIAGE_QUEUE_URL`.
+- **One message at a time:** the visibility timeout starts at receive. Ten messages handled one after another at up to ~25 s each would leave the later ones visible again before they were reached; another receive would count against their `maxReceiveCount`, so a healthy Ticket could reach the DLQ without ever failing. Throughput comes from running more worker processes, which the claim already makes safe.
+- **What happens to each message:**
+
+  | Outcome | Message |
+  |---|---|
+  | `claim_ticket` returns `None` (duplicate, or the Ticket moved on) | delete |
+  | `finish_triage` returns TRIAGED or UNMATCHED | delete, after the commit |
+  | `finish_triage` returns `None` (claim lost) | delete |
+  | scoring raises (`TimeoutError`, `ExceptionGroup`, `ValueError`), or `finish_triage` raises `ValueError` (definition disabled) | release the claim in its own transaction; keep the message |
+  | anything unexpected (database down, a bug) | log, try to release, keep the message |
+  | a body that doesn't parse | keep it; it reaches the DLQ after 3 receives |
+
+- **The visibility timeout is the backoff:** a kept message comes back after 60 s. Most failures are a provider's 429 or a short outage, and retrying at once (`ChangeMessageVisibility(0)`) would spend all three receives in seconds. A one-off failure waits up to a minute instead.
+- **Parsing:** the body is validated by a Pydantic `QueueMessage` (`event_id`, `event_type`, `payload.ticket_id`) in `app/models/queue.py`. A body that isn't a `ticket.queued` envelope raises `ValidationError` and fails the receive like any other error.
+- **FAILED:** `fail_ticket` in the Triage service compare-and-sets QUEUED or TRIAGING → FAILED, not fenced by `claimed_at`. If a slow worker is still running, either order is safe: FAILED first makes its fenced finish match nothing; its finish first makes the DLQ's compare-and-set match nothing. The DLQ consumer always deletes after its transaction, including for a Ticket that moved on, a missing Ticket or a body that doesn't parse: a DLQ message has nowhere further to go. A `ticket.failed` event that tells the User waits for §19, like `ticket.triaged`.
+- **Testing:** `handle_message` takes the providers and a transaction factory. The worker passes `SessionLocal.begin`; tests pass one that yields the test session inside `begin_nested()`, so each "commit" is a savepoint and the test still rolls everything back. The claim and finish compare-and-sets are already tested against real concurrency rules in PR 2; the loop itself isn't tested.
+- **Alternatives:** receiving ten and scoring them concurrently on the runner (higher throughput per process, but the synchronous claim and finish transactions would block the loop, and the visibility timing gets harder to reason about); the DLQ consumer inside the triage worker, alternating queues (one process fewer, but a slow attempt delays FAILED); reading the DLQ URL from the queue's `RedrivePolicy` (one env var fewer, but an extra call and IAM permission); real commits in tests with cleanup (closer to production, but slow and easy to leak rows between tests).
+- **Tradeoffs:** a third local process. Shutdown can wait up to 20 s for a long poll. Throughput per process is one Ticket per attempt's latency.
+- **Soundbite:** "Each worker takes one message, claims the Ticket, scores it with no transaction open, and deletes the message only after the decision commits. A failure releases the claim and lets the visibility timeout be the backoff; three failures land in the DLQ, whose consumer marks the Ticket FAILED."
 
 ### Local testing
 
