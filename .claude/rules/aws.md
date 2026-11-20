@@ -25,3 +25,9 @@
 - Serverless v2 auto-pauses after 300 s idle; idle pooled connections prevent it. Keep pools small, and expect a cold start of several seconds after a pause.
 - Run AWS-dependent tests deliberately and sparingly to control cost; everything else runs against local PostgreSQL. Mark them `aurora` so they stay out of the default `pytest` run (see `pytest.md`).
 - All of the IAM setup (Aurora env vars, RDS client, `do_connect` listener) lives in `create_iam_engine()` in `app/database.py`, used when `DATABASE_URL` is unset.
+
+## SQS
+
+- The queues `triage` and `triage-dlq` and the `ai-triage-sqs` policy are the CloudFormation stack `ai-triage-queues`, from `infra/triage-queues.yaml` (`cloudformation.md`). Never create or change them outside the stack.
+- The app's user has only `SendMessage`, `ReceiveMessage`, `DeleteMessage`, `GetQueueUrl` and `GetQueueAttributes` on those two queues. `ListQueues`, `PurgeQueue` and anything in IAM are denied, so look queues up by name and don't expect to purge AWS queues from tests.
+- The free tier is 1 million SQS requests a month. Each long-polling process makes about 130,000; don't leave extra workers polling.

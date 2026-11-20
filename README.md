@@ -13,6 +13,7 @@ A backend that turns natural-language requests into structured work. A user talk
 - **Ruff** for lint and format
 - **pytest** against a local PostgreSQL 17 in Docker
 - **Amazon SQS** (via `boto3`), fed by a transactional outbox; **ElasticMQ** stands in locally
+- **AWS CloudFormation** for the queues and their IAM policy (`infra/`)
 - **Anthropic API** (`anthropic`, Claude Haiku 5.5) and **Gemini API** (`google-genai`, Gemini 3.5 Flash-Lite) as Triage Providers
 - **GitHub Actions** runs Ruff, `alembic check` and pytest on every PR
 
@@ -46,7 +47,7 @@ TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage
 TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq
 ```
 
-Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need these variables.
+Without `SQS_ENDPOINT_URL`, boto3 talks to real SQS. The API itself doesn't need these variables. To use the queues in AWS instead, leave out `SQS_ENDPOINT_URL` and set the two URLs from *Deploy the queues to AWS* below.
 
 Triage Providers need their API keys, and `TRIAGE_PROVIDERS` chooses which ones run (one name, such as `anthropic`, needs only that provider's key):
 
@@ -58,11 +59,37 @@ GEMINI_API_KEY=<key from Google AI Studio>
 
 Don't also set `GOOGLE_API_KEY`: the Gemini SDK prefers it over `GEMINI_API_KEY`.
 
-AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user.
+AWS credentials come from the default credential chain (e.g. `aws configure`). The IAM identity needs `rds-db:connect` on the `triage_app` database user, and, to use the queues in AWS, the `ai-triage-sqs` policy the queue stack attaches.
 
 `certs/AmazonRootCA1.pem` is the public root certificate the database's TLS certificate chains to. The app verifies the connection against it; no setup needed.
 
 > **Note:** the AWS account is on the Free plan, where the RDS Query Editor isn't usable. Run admin SQL (users, databases, grants) as `postgres` in AWS CloudShell: open the cluster in the RDS console, go to *Connectivity & security*, and launch CloudShell from there.
+
+### Deploy the queues to AWS
+
+`infra/triage-queues.yaml` is a CloudFormation template for the `triage` queue, its `triage-dlq` dead-letter queue (the same settings as `elasticmq.conf`) and the `ai-triage-sqs` IAM policy, attached to the app's IAM user. The app's user can't create these, so deploy them from AWS CloudShell in `us-east-2`, signed in as root, after uploading the template (*Actions* → *Upload file*):
+
+```bash
+aws cloudformation deploy --template-file triage-queues.yaml --stack-name ai-triage-queues --parameter-overrides AppUserName=<app IAM user> --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset
+```
+
+This only creates a change set. Review it with the `describe-change-set` command the output prints, then execute it and wait:
+
+```bash
+aws cloudformation execute-change-set --change-set-name <change-set-arn>
+```
+
+```bash
+aws cloudformation wait stack-create-complete --stack-name ai-triage-queues
+```
+
+Read the queue URLs for `.env` (`TRIAGE_QUEUE_URL` and `TRIAGE_DLQ_URL`):
+
+```bash
+aws cloudformation describe-stacks --stack-name ai-triage-queues --query "Stacks[0].Outputs" --output table
+```
+
+To remove the queues and the policy, run `aws cloudformation delete-stack --stack-name ai-triage-queues`. Messages in the queues are lost.
 
 ## Run
 

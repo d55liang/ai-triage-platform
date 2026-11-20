@@ -681,7 +681,7 @@ tickets.triage_attempts  INTEGER DEFAULT 0     incremented in tx2; at most 3
 
 ### AWS queues and IAM (PR 5)
 
-- **Decision:** one CloudFormation template, `infra/triage-queues.yaml`, defines both queues and a customer-managed IAM policy attached to the `daniel` user. It is deployed from AWS CloudShell, signed in as root, with one `aws cloudformation deploy`, and removed with one `delete-stack`. The `daniel` user can't create SQS or IAM resources, and keeps only what the app needs.
+- **Decision:** one CloudFormation template, `infra/triage-queues.yaml`, defines both queues and a customer-managed IAM policy attached to the `daniel` user. It is deployed from AWS CloudShell, signed in as root: `aws cloudformation deploy --no-execute-changeset` creates a change set, which is reviewed (three `Add`s, nothing modified or replaced) and then executed. One `delete-stack` removes it all. The `daniel` user can't create SQS or IAM resources, and keeps only what the app needs.
 - **Queues**, with the same names and settings as `elasticmq.conf`:
   - `triage`: standard, `VisibilityTimeout` 60 s, `ReceiveMessageWaitTimeSeconds` 20, redrive to `triage-dlq` with `maxReceiveCount` 3. SQS moves a message once its receive count *exceeds* 3, so the fourth receive never reaches a worker.
   - `triage-dlq`: `MessageRetentionPeriod` 14 days (the maximum), longer than the source's 4-day default as AWS recommends, so a dead letter survives the DLQ consumer being down. A redrive-allow policy lets only `triage` use it as a DLQ.

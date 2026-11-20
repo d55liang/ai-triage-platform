@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Triage queues for the AI Triage Platform, mirroring elasticmq.conf, and the IAM policy the app
+  needs to use them.
+
+Parameters:
+  AppUserName:
+    Type: String
+    Description: The IAM user the relay and workers run as.
+
+Resources:
+  TriageDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: triage-dlq
+      # The maximum, longer than the source's 4-day default, so a dead letter survives the DLQ
+      # consumer being down.
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      # Only the triage queue may send its dead letters here. Its ARN is built rather than read
+      # with GetAtt: the triage queue already references this queue's ARN, and two GetAtts would
+      # be a circular dependency.
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:triage
+
+  TriageQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: triage
+      # Longer than the 45 s claim lease, which is longer than one attempt. CloudFormation's
+      # default is 30 s, so it must be set.
+      VisibilityTimeout: 60
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      # SQS moves a message once its receive count exceeds 3: the fourth receive never reaches
+      # a worker.
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TriageDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  TriageQueuePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: ai-triage-sqs
+      Description: Send, receive and delete on the triage queues; nothing else.
+      Users:
+        - !Ref AppUserName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # The relay. SendMessage also covers SendMessageBatch.
+          - Sid: PublishTriage
+            Effect: Allow
+            Action: sqs:SendMessage
+            Resource: !GetAtt TriageQueue.Arn
+          # The triage worker and the DLQ consumer.
+          - Sid: ConsumeTriage
+            Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+            Resource:
+              - !GetAtt TriageQueue.Arn
+              - !GetAtt TriageDeadLetterQueue.Arn
+          # The AWS test, read-only: finds the queues by name and checks their settings.
+          - Sid: InspectTriage
+            Effect: Allow
+            Action:
+              - sqs:GetQueueUrl
+              - sqs:GetQueueAttributes
+            Resource:
+              - !GetAtt TriageQueue.Arn
+              - !GetAtt TriageDeadLetterQueue.Arn
+
+Outputs:
+  TriageQueueUrl:
+    Description: TRIAGE_QUEUE_URL in .env
+    Value: !Ref TriageQueue
+  TriageDeadLetterQueueUrl:
+    Description: TRIAGE_DLQ_URL in .env
+    Value: !Ref TriageDeadLetterQueue
