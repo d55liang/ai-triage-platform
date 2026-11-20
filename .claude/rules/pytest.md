@@ -36,8 +36,16 @@ Rationale is in `DESIGN.md` §10.
 
 ## Aurora
 
-- Mark tests that need AWS with `@pytest.mark.aurora`. `addopts = "-m 'not aurora and not llm'"` excludes them by default; run them deliberately with `pytest -m aurora`.
+- Mark tests that need Aurora with `@pytest.mark.aurora`. `addopts = "-m 'not aurora and not llm and not aws'"` excludes them by default; run them deliberately with `pytest -m aurora`.
 - An Aurora test builds its own engine with `create_iam_engine()`, because the forced `DATABASE_URL` means the module-level `engine` is local.
+
+## SQS in AWS
+
+- Tests of the real queues are marked `@pytest.mark.aws` (module-level `pytestmark`) and run only with `pytest -m aws`, with no relay or workers running against AWS.
+- They build their own boto3 client without an endpoint and look queues up by name with `get_queue_url`, because `conftest.py` forces `app.queue` and the queue URLs to ElasticMQ. To exercise the app's own functions, swap the client with `monkeypatch.setattr("app.queue.sqs_client", ...)`.
+- Never take a real message: check the queue is empty before receiving, send a body with a fresh `uuid4()`, and delete only a message whose body is that one. The app's user can't purge.
+- Approximate message counts lag on real SQS; don't assert them after a send or delete.
+- Both `aurora` and `aws` runs still need Docker, because `migrated_database` runs for every session.
 
 ## LLM providers
 

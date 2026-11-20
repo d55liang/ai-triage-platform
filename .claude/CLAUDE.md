@@ -25,7 +25,8 @@ This is a personal resume project. See *Collaboration mode* in [GUIDELINE.md](GU
 | Lint / format | Ruff (`pyproject.toml`) | |
 | Tests | pytest, httpx2 (`TestClient`) | |
 | CI | GitHub Actions (`.github/workflows/ci.yml`) | |
-| Queue | Amazon SQS through `boto3`, fed by a transactional outbox; ElasticMQ in Docker locally and in CI | Queues in AWS (need approval) |
+| Queue | Amazon SQS through `boto3`, fed by a transactional outbox; queues `triage` and `triage-dlq` in `us-east-2`; ElasticMQ in Docker locally and in CI | |
+| Infrastructure | AWS CloudFormation (`infra/`), deployed from CloudShell as root | |
 | Triage Providers | Anthropic API through `anthropic` and Gemini API through `google-genai` (async clients, structured outputs) | |
 
 Technology-specific rules live in [rules/](rules/).
@@ -68,8 +69,10 @@ tests/
   test_provider_factory.py  Building providers from TRIAGE_PROVIDERS; no API calls
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
+  test_sqs_aws.py         The real queues' settings and the IAM policy's permissions (marked aws, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
 elasticmq.conf            Local queues: triage and its DLQ, as in AWS
+infra/triage-queues.yaml  CloudFormation: the AWS queues and the ai-triage-sqs IAM policy for the app's user
 .github/workflows/ci.yml  Ruff, alembic check and pytest on every PR
 ```
 
@@ -91,6 +94,13 @@ alembic upgrade head --sql                            # print the SQL without co
 ```
 
 ```bash
+# In AWS CloudShell as root, never from the laptop: the app's user can't create these. Steps in README.md.
+aws cloudformation deploy --template-file triage-queues.yaml --stack-name ai-triage-queues --parameter-overrides AppUserName=<app IAM user> --capabilities CAPABILITY_NAMED_IAM --no-execute-changeset
+aws cloudformation execute-change-set --change-set-name <change-set-arn>   # only after reviewing it
+aws cloudformation describe-stacks --stack-name ai-triage-queues --query "Stacks[0].Outputs"   # queue URLs for .env
+```
+
+```bash
 # Check for models with no migration, against the local test database. Without DATABASE_URL this connects to Aurora.
 DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5433/ai_triage_test alembic check
 ```
@@ -105,6 +115,7 @@ docker compose up -d     # start the local test database and ElasticMQ (Docker m
 pytest                   # run the local tests; never touches Aurora
 pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
 pytest -m llm            # run the live Triage Provider tests deliberately; costs a little
+pytest -m aws            # check the real SQS queues and permissions; no workers may be running against AWS
 ```
 
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.
@@ -115,7 +126,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 `DATABASE_URL` is optional and selects a plain engine instead of the IAM one (see `DESIGN.md` §10). `tests/conftest.py` always sets it to the local test database.
 
-`TRIAGE_QUEUE_URL` and `TRIAGE_DLQ_URL` are required by anything that imports `app/queue.py` (the relay and the workers; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324`, `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage` and `TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq`. `tests/conftest.py` always sets all three, and `AWS_REGION`.
+`TRIAGE_QUEUE_URL` and `TRIAGE_DLQ_URL` are required by anything that imports `app/queue.py` (the relay and the workers; not the API). `SQS_ENDPOINT_URL` is optional and points boto3 at ElasticMQ instead of AWS. For AWS, leave it unset and take both URLs from the `ai-triage-queues` stack's outputs. For local runs: `SQS_ENDPOINT_URL=http://127.0.0.1:9324`, `TRIAGE_QUEUE_URL=http://127.0.0.1:9324/000000000000/triage` and `TRIAGE_DLQ_URL=http://127.0.0.1:9324/000000000000/triage-dlq`. `tests/conftest.py` always sets all three, and `AWS_REGION`.
 
 `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` are read by each SDK itself when `AnthropicProvider` or `GeminiProvider` is built; only the triage worker and `pytest -m llm` need them. `GeminiProvider` raises without its key, and `GOOGLE_API_KEY`, if set, takes priority over `GEMINI_API_KEY`.
 
@@ -124,7 +135,7 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 ## Current status
 
 - **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone.
-- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in five PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (merged); the Anthropic and Gemini Triage Providers (merged); the triage worker and DLQ consumer (in progress on `feat/triage-worker`); AWS queues and IAM.
+- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in five PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (merged); the Anthropic and Gemini Triage Providers (merged); the triage worker and DLQ consumer (merged); AWS queues and IAM (in progress on `feat/aws-queues`).
 - **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); then an offline labelled evaluation set that measures each Triage Provider's accuracy.
 
 Update this section when a milestone starts or lands.

@@ -5,6 +5,7 @@ paths:
   - "app/services/outbox_service.py"
   - "elasticmq.conf"
   - "docker-compose.yml"
+  - "infra/triage-queues.yaml"
 ---
 
 # Amazon SQS rules
@@ -34,7 +35,7 @@ Rationale is in `DESIGN.md` §18.
 
 ## Queues
 
-- Queues are declared in `elasticmq.conf` for local use, with the same names, visibility timeout and DLQ redrive as AWS. Change both together.
+- Queues are declared twice, with the same names, visibility timeout and DLQ redrive: `elasticmq.conf` for local use and `infra/triage-queues.yaml` for AWS. Change both together.
 - Creating or changing queues, DLQs or their IAM policies in AWS needs explicit approval (`aws.md`).
 
 ## Tests
