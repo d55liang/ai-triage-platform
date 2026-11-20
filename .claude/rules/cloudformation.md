@@ -27,5 +27,5 @@ Rationale is in `DESIGN.md` §18, *AWS queues and IAM*. Creating, changing or de
 - Deploy from AWS CloudShell, signed in as root; the `daniel` user can't create SQS or IAM resources, by design.
 - Always review first: `aws cloudformation deploy ... --no-execute-changeset`, read the change set (`describe-change-set`), and execute it only after the change list is what was planned. A `Replace` on a named queue deletes it with its messages.
 - Never edit stack resources in the console or CLI afterwards; change the template and deploy again, or the stack drifts.
-- Verify afterwards from the laptop as `daniel`, read-only (`GetQueueUrl`, `GetQueueAttributes`).
+- Verify afterwards from the laptop as `daniel`, read-only (`GetQueueUrl`, `GetQueueAttributes`), then with `pytest -m aws`.
 - Remove everything with `aws cloudformation delete-stack`. A deleted queue's name can't be reused for 60 s.

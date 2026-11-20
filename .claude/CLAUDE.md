@@ -69,6 +69,7 @@ tests/
   test_provider_factory.py  Building providers from TRIAGE_PROVIDERS; no API calls
   test_migrations.py      Downgrade and upgrade round trip
   test_aurora.py          IAM connectivity (marked aurora, excluded by default)
+  test_sqs_aws.py         The real queues' settings and the IAM policy's permissions (marked aws, excluded by default)
 docker-compose.yml        PostgreSQL 17 on 127.0.0.1:5433 and ElasticMQ on 127.0.0.1:9324, for tests
 elasticmq.conf            Local queues: triage and its DLQ, as in AWS
 infra/triage-queues.yaml  CloudFormation: the AWS queues and the ai-triage-sqs IAM policy for the app's user
@@ -114,6 +115,7 @@ docker compose up -d     # start the local test database and ElasticMQ (Docker m
 pytest                   # run the local tests; never touches Aurora
 pytest -m aurora         # run the Aurora test deliberately; wakes the cluster
 pytest -m llm            # run the live Triage Provider tests deliberately; costs a little
+pytest -m aws            # check the real SQS queues and permissions; no workers may be running against AWS
 ```
 
 Run every command with the venv active (`which alembic` must point into `venv/`); Conda's `(base)` environment otherwise shadows it.

@@ -20,8 +20,9 @@ known-third-party = ["alembic"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-m 'not aurora and not llm'"
+addopts = "-m 'not aurora and not llm and not aws'"
 markers = [
     "aurora: needs the real Aurora cluster; run deliberately with pytest -m aurora",
     "llm: calls a real LLM API and costs money; run deliberately with pytest -m llm",
+    "aws: needs the real SQS queues; run deliberately with pytest -m aws, with no workers running",
 ]

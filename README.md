@@ -151,6 +151,12 @@ pytest -m aurora
 pytest -m llm
 ```
 
+`pytest` never touches the AWS queues either. To check that they match `elasticmq.conf` and that the app's IAM user can send, receive and delete, run this with no relay or workers running against AWS. It needs AWS credentials, but no queue URLs in `.env`:
+
+```bash
+pytest -m aws
+```
+
 To check that every model change has a migration, run this against the local test database. Without `DATABASE_URL`, Alembic connects to Aurora.
 
 ```bash
