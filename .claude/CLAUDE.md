@@ -134,9 +134,9 @@ Run every command with the venv active (`which alembic` must point into `venv/`)
 
 ## Current status
 
-- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone.
-- **In progress:** Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in five PRs: transactional outbox and relay, removing CREATED (merged); the Triage decision with consensus across Triage Providers (merged); the Anthropic and Gemini Triage Providers (merged); the triage worker and DLQ consumer (merged); AWS queues and IAM (in progress on `feat/aws-queues`).
-- **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); then an offline labelled evaluation set that measures each Triage Provider's accuracy.
+- **Done:** Ticket CRUD API (`/api/tickets`) persisting to Aurora through SQLAlchemy with IAM auth tokens and one session per request; Ticket cancel endpoint (see `DESIGN.md` §11); `Ticket` ORM model, Ticket Status enum, Alembic with the first migration ([ADR 0001](../docs/adr/0001-iam-auth-over-data-api.md)); Ruff lint and format setup (see `DESIGN.md` §13); pytest setup with a local PostgreSQL 17 (see `DESIGN.md` §10); GitHub Actions CI (see `DESIGN.md` §14); Workflow Definition API with immutable versions, publishing and disable/enable (`DESIGN.md` §15, [ADR 0002](../docs/adr/0002-immutable-workflow-definition-versions.md)). Workflow Runs: one per Ticket, pinned to a version, with Required Input submission and cancelling through the Ticket (`DESIGN.md` §17); executing Steps is a later milestone. Triage (`DESIGN.md` §18, [ADR 0003](../docs/adr/0003-consensus-triage.md)), in five PRs: transactional outbox and relay, removing CREATED; the Triage decision with consensus across Triage Providers; the Anthropic and Gemini Triage Providers; the triage worker and DLQ consumer; the AWS queues and their IAM policy as a CloudFormation stack, deployed in `us-east-2`.
+- **In progress:** nothing.
+- **Next:** Conversation and the Intake Agent (`DESIGN.md` §19), including the turn that collects Required Inputs (§16); its design is in §19 but hasn't been grilled into PRs yet. Then an offline labelled evaluation set that measures each Triage Provider's accuracy.
 
 Update this section when a milestone starts or lands.
 
@@ -165,6 +165,15 @@ Follow the existing code. In particular:
 ## Testing strategy
 
 1. **Local PostgreSQL first** for fast tests: API tests through `TestClient` with no mocks, plus migrations. Each test rolls back; the schema comes from Alembic.
-2. **Aurora** only for the important tests that depend on AWS behaviour, e.g. IAM token auth and connectivity. Marked `aurora`, excluded by default, and run deliberately to save cost.
+2. **Local ElasticMQ** for everything that sends or receives; `conftest.py` forces it, so no default test can reach AWS.
+3. **Deliberate tests**, excluded by default (`addopts` in `pyproject.toml`) and out of CI, only for behaviour local services can't show:
+
+   | Marker | Tests | Checks | Needs |
+   |---|---|---|---|
+   | `aurora` | `test_aurora.py` (1) | IAM token auth and TLS to the real cluster | `.env` DB variables; wakes the cluster |
+   | `llm` | `test_anthropic_provider.py`, `test_gemini_provider.py` (1 each) | One live scoring call per Triage Provider | API keys; costs a fraction of a cent |
+   | `aws` | `test_sqs_aws.py` (4) | Real queue settings match `elasticmq.conf`; the IAM policy allows the app's calls | AWS credentials; no workers running against AWS |
+
+   All three still need Docker, because the migration fixture runs for every session.
 
 See `DESIGN.md` §10 and `rules/pytest.md`.

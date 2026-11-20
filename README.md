@@ -3,7 +3,7 @@
 
 A backend that turns natural-language requests into structured work. A user talks to an AI **Intake Agent**; each distinct request becomes a **Ticket**, which **Triage** matches to a predefined **Workflow Definition** once it is confident enough, creating a **Workflow Run**.
 
-> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by a service Triage will call (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS, a triage worker scores it with two Triage Providers and creates a Workflow Run when they agree; a Ticket that fails three times is moved to FAILED by a DLQ consumer (§18). The Intake Agent is not built yet.
+> **Status:** The Ticket and Workflow Definition APIs persist to Aurora PostgreSQL through SQLAlchemy, using short-lived IAM auth tokens; the schema is managed with Alembic. Workflow Runs can be read, given Required Inputs and cancelled through their Ticket, and are created by Triage (see [DESIGN.md](DESIGN.md) §17). Each new Ticket is queued for Triage through a transactional outbox, and a relay publishes it to SQS, a triage worker scores it with two Triage Providers and creates a Workflow Run when they agree; a Ticket that fails three times is moved to FAILED by a DLQ consumer (§18). The queues run on Amazon SQS, defined as a CloudFormation stack. The Intake Agent is not built yet.
 
 ## Tech stack
 

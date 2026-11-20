@@ -167,7 +167,7 @@ Status: **done**.
 
 ## 11. Ticket lifecycle: a status per handoff, ending at Triage
 
-Status: **enum and cancelling done**; the outbox, SQS and Triage workers that drive the other transitions are designed in §18. CREATED is being removed (see *Why*), and UNMATCHED is no longer final: after the User clarifies, the same Ticket is queued again.
+Status: **enum and cancelling done**; the outbox, SQS and Triage workers that drive the other transitions are built in §18. CREATED is removed (see *Why*), and UNMATCHED is no longer final: after the User clarifies, the same Ticket is queued again.
 
 ```text
 insert + outbox row ─▶ QUEUED ──worker claims──▶ TRIAGING ──every provider agrees──▶ TRIAGED
@@ -517,13 +517,13 @@ POST /api/workflow-runs/{run_id}/inputs      submit Required Inputs; 404 / 409 /
 
 ## 18. Triage: outbox, SQS and consensus across providers
 
-Status: **in progress** (PRs 1–4 merged, PR 5 on `feat/aws-queues`), to be built before Conversation (§19), in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
+Status: **done**, built before Conversation (§19) in five PRs that each leave the app runnable (`POST /api/tickets` keeps working until §19 removes it):
 
 1. **Outbox (merged):** remove CREATED with a hand-written `CHECK` migration, so `create_ticket` inserts QUEUED plus an outbox row; the `outbox_events` table, the relay, ElasticMQ in `docker-compose.yml` and CI, and an `sqs.md` rules file.
 2. **Triage decision (merged):** `triage_results`, `claimed_at` and `triage_attempts`; the `TriageProvider` Protocol and a fake; the Triage service (`claim_ticket`, `score_ticket`, `finish_triage`, `release_claim`), with `create_workflow_run` fenced by `claimed_at`; tested by calling the service directly. The worker loop that calls them comes in PR 4.
 3. **Providers (merged):** the Anthropic and Gemini adapters, the shared prompt, `build_providers()` from `TRIAGE_PROVIDERS`, the dependencies, an `llm-providers.md` rules file, and live tests marked `llm` (see *Triage Provider adapters*).
 4. **Triage worker (merged):** the worker loop on one `asyncio.Runner`, deleting or releasing each message, and the DLQ consumer (see *Triage worker and DLQ consumer*).
-5. **AWS, with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws` (see *AWS queues and IAM*).
+5. **AWS (merged, deployed), with approval for each change:** the queues, the DLQ, the IAM policy, and one test marked `aws` (see *AWS queues and IAM*).
 
 Split from one "workers and providers" PR so each stays small enough to review and explain in one sitting; the adapters can be checked live before anything consumes the queue.
 
